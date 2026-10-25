@@ -1,0 +1,72 @@
+# Environment
+.env
+.env.local
+.env.*.local
+*.env
+
+# Node
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# Expo / React Native
+.expo/
+dist/
+build/
+android/app/build/
+android/.gradle/
+android/build/
+ios/build/
+ios/Pods/
+*.jks
+*.p8
+*.p12
+*.key
+*.mobileprovision
+*.orig.*
+web-build/
+.cache/
+
+# Next.js
+apps/admin/.next/
+apps/admin/out/
+
+# Python / ML
+__pycache__/
+*.py[cod]
+*.pyo
+.Python
+ml/.venv/
+ml/datasets/
+ml/runs/
+*.pt
+*.onnx
+!apps/mobile/assets/models/*.onnx
+
+# Model files (large) - bundled model is the only exception
+yolov8n.pt
+yolov8n.onnx
+
+# macOS
+.DS_Store
+
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Supabase
+supabase/.temp/
+supabase/functions/.cache/
+
+# Logs
+logs/
+*.log

@@ -1,0 +1,69 @@
+{
+  "expo": {
+    "name": "RoadGuard",
+    "slug": "roadguard",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "light",
+    "scheme": "roadguard",
+    "newArchEnabled": true,
+    "plugins": [
+      "expo-router",
+      "expo-secure-store",
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "RoadGuard needs camera access to photograph road damage for your complaint."
+        }
+      ],
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "RoadGuard needs photo library access so you can attach existing road damage photos."
+        }
+      ],
+      [
+        "expo-location",
+        {
+          "locationAlwaysAndWhenInUsePermission": "RoadGuard needs your location to accurately place your road damage report on the map.",
+          "locationWhenInUsePermission": "RoadGuard needs your location to accurately place your road damage report on the map."
+        }
+      ]
+    ],
+    "ios": {
+      "supportsTablet": false,
+      "bundleIdentifier": "com.roadguard.app",
+      "infoPlist": {
+        "NSLocationWhenInUseUsageDescription": "RoadGuard needs your location to accurately place your road damage report on the map.",
+        "NSCameraUsageDescription": "RoadGuard needs camera access to photograph road damage.",
+        "NSPhotoLibraryUsageDescription": "RoadGuard needs photo library access to attach existing road damage photos."
+      }
+    },
+    "android": {
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#FFFFFF"
+      },
+      "package": "com.roadguard.app",
+      "permissions": [
+        "android.permission.CAMERA",
+        "android.permission.READ_EXTERNAL_STORAGE",
+        "android.permission.WRITE_EXTERNAL_STORAGE",
+        "android.permission.ACCESS_FINE_LOCATION",
+        "android.permission.ACCESS_COARSE_LOCATION",
+        "android.permission.INTERNET",
+        "android.permission.ACCESS_NETWORK_STATE"
+      ]
+    },
+    "web": {
+      "bundler": "metro",
+      "favicon": "./assets/favicon.png"
+    },
+    "extra": {
+      "eas": {
+        "projectId": "your-eas-project-id-here"
+      }
+    }
+  }
+}

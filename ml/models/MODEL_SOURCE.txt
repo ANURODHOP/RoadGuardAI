@@ -1,0 +1,6 @@
+Model: YOLOv8n (COCO pretrained)
+Source: Ultralytics official weights
+License: AGPL-3.0
+Limitation: Not fine-tuned for potholes. Uses COCO class detection.
+Classes used: All 80 COCO classes (road hazards detected as general objects)
+Recommendation: Run train.py with a pothole dataset for better accuracy.
