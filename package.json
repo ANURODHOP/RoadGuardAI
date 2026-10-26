@@ -1,0 +1,30 @@
+{
+  "name": "roadguard",
+  "version": "1.0.0",
+  "private": true,
+  "description": "RoadGuard — Offline AI-Powered Road Damage Detection & Complaint Management",
+  "workspaces": [
+    "apps/mobile",
+    "apps/admin"
+  ],
+  "scripts": {
+    "mobile": "npm --prefix apps/mobile start",
+    "mobile:android": "npm --prefix apps/mobile run android",
+    "mobile:typecheck": "npm --prefix apps/mobile run typecheck",
+    "admin": "npm --prefix apps/admin run dev",
+    "admin:build": "npm --prefix apps/admin run build",
+    "admin:start": "npm --prefix apps/admin run start",
+    "test:ml": "python ml/scripts/test_inference.py"
+  },
+  "keywords": [
+    "civic-tech",
+    "pothole-detection",
+    "yolov8",
+    "onnx",
+    "react-native",
+    "nextjs",
+    "supabase"
+  ],
+  "author": "RoadGuard Engineering Team",
+  "license": "MIT"
+}
