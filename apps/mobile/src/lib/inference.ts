@@ -65,9 +65,7 @@ export async function loadModel(): Promise<void> {
     _modelPath = asset.localUri
     _session = await InferenceSession.create(_modelPath)
 
-    // Check if this is the pothole-specific model by reading the marker file
-    const markerPath = `${FileSystem.bundleDirectory ?? ''}MODEL_SOURCE.txt`
-    _modelSource = 'coco_fallback' // default; updated if fine-tuned
+    _modelSource = (process.env.EXPO_PUBLIC_MODEL_SOURCE as 'pothole_finetuned' | 'coco_fallback') ?? 'coco_fallback'
 
     console.log('[ONNX] Model loaded:', _modelPath)
     console.log('[ONNX] Input names:', _session.inputNames)

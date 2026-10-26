@@ -8,7 +8,7 @@ import * as ImagePicker from 'expo-image-picker'
 import * as Location from 'expo-location'
 import { manipulateAsync, SaveFormat } from 'expo-image-manipulator'
 import { useRouter } from 'expo-router'
-import { Colors, Typography, Spacing, BorderRadius } from '../../src/lib/theme'
+import { Colors, Typography, Spacing, BorderRadius } from '../src/lib/theme'
 
 const { width } = Dimensions.get('window')
 type Mode = 'camera' | 'gallery'

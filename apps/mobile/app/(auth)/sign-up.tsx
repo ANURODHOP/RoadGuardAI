@@ -56,9 +56,9 @@ export default function SignUpScreen() {
   const [success, setSuccess] = useState(false)
 
   // Refs for sequential focus on keyboard "next"
-  const emailRef = useRef<TextInput>(null)
-  const passwordRef = useRef<TextInput>(null)
-  const confirmPasswordRef = useRef<TextInput>(null)
+  const emailRef = useRef<React.ElementRef<typeof TextInput>>(null)
+  const passwordRef = useRef<React.ElementRef<typeof TextInput>>(null)
+  const confirmPasswordRef = useRef<React.ElementRef<typeof TextInput>>(null)
 
   const handleSignUp = async () => {
     const validationError = validate(displayName, email, password, confirmPassword)
