@@ -1,5 +1,7 @@
 import { createClient } from '@/lib/supabase-server'
 
+export const dynamic = 'force-dynamic'
+
 type Stats = {
   total: number; pending: number; verified: number; assigned: number;
   in_progress: number; resolved: number; rejected: number; duplicate: number;
@@ -7,7 +9,7 @@ type Stats = {
 }
 
 export default async function DashboardOverviewPage() {
-  const supabase = createClient()
+  const supabase = await createClient()
 
   const [statsRes, recentRes] = await Promise.all([
     supabase.rpc('get_complaint_stats'),
