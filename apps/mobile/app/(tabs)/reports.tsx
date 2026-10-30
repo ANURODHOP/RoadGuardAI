@@ -1,10 +1,10 @@
-import React, { useEffect, useState, useCallback } from 'react'
+import React, { useEffect, useState, useCallback, useRef } from 'react'
 import {
   View, Text, StyleSheet, FlatList, TouchableOpacity,
   SafeAreaView, ActivityIndicator, RefreshControl,
 } from 'react-native'
 import { useRouter } from 'expo-router'
-import { supabase } from '../../src/lib/supabase'
+import { supabase, fetchMyComplaintsPage } from '../../src/lib/supabase'
 import { Colors, Typography, Spacing, BorderRadius, getStatusColor } from '../../src/lib/theme'
 import type { Complaint, ComplaintStatus } from '../../src/lib/supabase'
 
@@ -15,6 +15,8 @@ const STATUS_FILTERS: { label: string; value: ComplaintStatus | 'all' }[] = [
   { label: 'In Progress', value: 'in_progress' },
   { label: 'Resolved', value: 'resolved' },
 ]
+
+const PAGE_SIZE = 20
 
 function timeAgo(date: string): string {
   const diff = Date.now() - new Date(date).getTime()
@@ -28,42 +30,73 @@ function timeAgo(date: string): string {
 export default function ReportsScreen() {
   const router = useRouter()
   const [complaints, setComplaints] = useState<Complaint[]>([])
-  const [filtered, setFiltered] = useState<Complaint[]>([])
   const [activeFilter, setActiveFilter] = useState<ComplaintStatus | 'all'>('all')
   const [loading, setLoading] = useState(true)
+  const [loadingMore, setLoadingMore] = useState(false)
   const [refreshing, setRefreshing] = useState(false)
+  const [totalCount, setTotalCount] = useState(0)
+  const [currentPage, setCurrentPage] = useState(1)
+  const [hasMore, setHasMore] = useState(false)
+  const isLoadingMoreRef = useRef(false)
 
-  const loadComplaints = useCallback(async () => {
-    const { data: { user } } = await supabase.auth.getUser()
-    if (!user) return
-    const { data, error } = await supabase
-      .from('complaints')
-      .select('*')
-      .eq('reporter_id', user.id)
-      .order('created_at', { ascending: false })
-    if (!error && data) {
-      setComplaints(data as Complaint[])
-      applyFilter(data as Complaint[], activeFilter)
+  // ── Load first page ───────────────────────────────────────────────────────
+  const loadComplaints = useCallback(async (
+    page: number = 1,
+    statusFilter: ComplaintStatus | 'all' = activeFilter,
+    append: boolean = false,
+  ) => {
+    if (page === 1) {
+      setLoading(true)
+    }
+
+    try {
+      const result = await fetchMyComplaintsPage(
+        page,
+        PAGE_SIZE,
+        statusFilter === 'all' ? undefined : statusFilter,
+      )
+
+      setComplaints(prev => append ? [...prev, ...result.complaints] : result.complaints)
+      setTotalCount(result.totalCount)
+      setHasMore(result.hasMore)
+      setCurrentPage(page)
+    } catch (err) {
+      console.warn('[Reports] loadComplaints error:', err)
+    } finally {
+      setLoading(false)
+      setLoadingMore(false)
+      isLoadingMoreRef.current = false
     }
   }, [activeFilter])
 
   useEffect(() => {
-    setLoading(true)
-    loadComplaints().finally(() => setLoading(false))
-  }, [])
+    loadComplaints(1, activeFilter, false)
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
-  const applyFilter = (data: Complaint[], status: ComplaintStatus | 'all') => {
+  // ── Filter change ─────────────────────────────────────────────────────────
+  const handleFilterChange = useCallback((status: ComplaintStatus | 'all') => {
     setActiveFilter(status)
-    if (status === 'all') setFiltered(data)
-    else setFiltered(data.filter(c => c.complaint_status === status))
-  }
+    setComplaints([])
+    setCurrentPage(1)
+    loadComplaints(1, status, false)
+  }, [loadComplaints])
 
-  const handleRefresh = async () => {
+  // ── Pull-to-refresh ───────────────────────────────────────────────────────
+  const handleRefresh = useCallback(async () => {
     setRefreshing(true)
-    await loadComplaints()
+    await loadComplaints(1, activeFilter, false)
     setRefreshing(false)
-  }
+  }, [activeFilter, loadComplaints])
 
+  // ── Infinite scroll ───────────────────────────────────────────────────────
+  const handleLoadMore = useCallback(() => {
+    if (!hasMore || isLoadingMoreRef.current || loadingMore) return
+    isLoadingMoreRef.current = true
+    setLoadingMore(true)
+    loadComplaints(currentPage + 1, activeFilter, true)
+  }, [hasMore, loadingMore, currentPage, activeFilter, loadComplaints])
+
+  // ── Render item ───────────────────────────────────────────────────────────
   const renderItem = ({ item }: { item: Complaint }) => {
     const statusInfo = getStatusColor(item.complaint_status)
     return (
@@ -98,21 +131,32 @@ export default function ReportsScreen() {
     )
   }
 
+  const renderFooter = () => {
+    if (!loadingMore) return null
+    return (
+      <View style={styles.footerLoader}>
+        <ActivityIndicator size="small" color={Colors.accent} />
+      </View>
+    )
+  }
+
   return (
     <SafeAreaView style={styles.container}>
       <View style={styles.header}>
         <Text style={styles.title}>My Reports</Text>
-        <Text style={styles.subtitle}>{complaints.length} total report{complaints.length !== 1 ? 's' : ''}</Text>
+        <Text style={styles.subtitle}>
+          {totalCount} total report{totalCount !== 1 ? 's' : ''}
+        </Text>
       </View>
 
-      {/* Filter bar */}
+      {/* Status filter bar */}
       <View style={styles.filterBar}>
         {STATUS_FILTERS.map(f => (
           <TouchableOpacity
             key={f.value}
             id={`filter-${f.value}`}
             style={[styles.filterBtn, activeFilter === f.value && styles.filterBtnActive]}
-            onPress={() => applyFilter(complaints, f.value)}
+            onPress={() => handleFilterChange(f.value)}
           >
             <Text style={[styles.filterBtnText, activeFilter === f.value && styles.filterBtnTextActive]}>
               {f.label}
@@ -127,11 +171,21 @@ export default function ReportsScreen() {
         </View>
       ) : (
         <FlatList
-          data={filtered}
+          data={complaints}
           keyExtractor={item => item.id}
           renderItem={renderItem}
-          contentContainerStyle={filtered.length === 0 ? styles.emptyContainer : styles.listContent}
-          refreshControl={<RefreshControl refreshing={refreshing} onRefresh={handleRefresh} tintColor={Colors.accent} />}
+          contentContainerStyle={complaints.length === 0 ? styles.emptyContainer : styles.listContent}
+          refreshControl={
+            <RefreshControl
+              refreshing={refreshing}
+              onRefresh={handleRefresh}
+              tintColor={Colors.accent}
+              colors={[Colors.accent]}
+            />
+          }
+          onEndReached={handleLoadMore}
+          onEndReachedThreshold={0.3}
+          ListFooterComponent={renderFooter}
           showsVerticalScrollIndicator={false}
           ListEmptyComponent={
             <View style={styles.emptyState}>
@@ -182,11 +236,13 @@ const styles = StyleSheet.create({
   loadingContainer: { flex: 1, justifyContent: 'center', alignItems: 'center' },
   listContent: { padding: Spacing.lg, gap: Spacing.md },
   emptyContainer: { flex: 1 },
+  footerLoader: { paddingVertical: Spacing.lg, alignItems: 'center' },
   card: {
     backgroundColor: Colors.background, borderRadius: BorderRadius.lg,
     padding: Spacing.md, borderWidth: 1, borderColor: Colors.border,
     shadowColor: '#000', shadowOffset: { width: 0, height: 1 },
     shadowOpacity: 0.05, shadowRadius: 4, elevation: 2,
+    marginBottom: Spacing.md,
   },
   cardHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: Spacing.xs },
   cardId: { fontSize: Typography.fontSize.xs, fontWeight: Typography.fontWeight.semibold, color: Colors.textTertiary, letterSpacing: 0.5 },

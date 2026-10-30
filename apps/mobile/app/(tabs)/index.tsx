@@ -199,35 +199,47 @@ export default function HomeScreen() {
     }
   }, [])
 
-  // Fetch my complaints
+  // Fetch my complaints — paginated, with stats via separate count query
   const fetchMine = useCallback(async () => {
     setLoadingMine(true)
     try {
       const { data: { user } } = await supabase.auth.getUser()
       if (!user) return
 
-      const { data, error } = await supabase
+      // Fetch recent 3 reports for display
+      const { data: recentData, error: recentError } = await supabase
         .from('complaints')
-        .select('*')
+        .select('id, latitude, longitude, address_label, damage_type, complaint_status, detection_confidence, created_at')
         .eq('reporter_id', user.id)
         .order('created_at', { ascending: false })
+        .limit(3)
 
-      if (error) {
-        console.warn('fetchMine error:', error.message)
-        return
+      if (recentError) {
+        console.warn('[Home] fetchMine recent error:', recentError.message)
       }
+      setMyReports((recentData ?? []) as Complaint[])
 
-      const all = data ?? []
-      setMyReports(all.slice(0, 3))
-      setTotalCount(all.length)
-      setPendingCount(
-        all.filter((c) =>
-          ['pending_verification', 'verified', 'assigned', 'in_progress'].includes(
-            c.complaint_status,
-          ),
-        ).length,
-      )
-      setResolvedCount(all.filter((c) => c.complaint_status === 'resolved').length)
+      // Fetch counts via count query (no data transfer)
+      const { count: total } = await supabase
+        .from('complaints')
+        .select('id', { count: 'exact', head: true })
+        .eq('reporter_id', user.id)
+
+      const { count: pending } = await supabase
+        .from('complaints')
+        .select('id', { count: 'exact', head: true })
+        .eq('reporter_id', user.id)
+        .in('complaint_status', ['pending_verification', 'verified', 'assigned', 'in_progress'])
+
+      const { count: resolved } = await supabase
+        .from('complaints')
+        .select('id', { count: 'exact', head: true })
+        .eq('reporter_id', user.id)
+        .eq('complaint_status', 'resolved')
+
+      setTotalCount(total ?? 0)
+      setPendingCount(pending ?? 0)
+      setResolvedCount(resolved ?? 0)
     } finally {
       setLoadingMine(false)
     }

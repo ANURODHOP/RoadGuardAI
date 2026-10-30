@@ -1,4 +1,4 @@
-import React, { useState } from 'react'
+import React, { useState, useRef } from 'react'
 import {
   View, Text, StyleSheet, TouchableOpacity, SafeAreaView,
   ScrollView, TextInput, ActivityIndicator, Image, Alert,
@@ -9,6 +9,7 @@ import { supabase, uploadEvidence } from '../src/lib/supabase'
 import { Colors, Typography, Spacing, BorderRadius, getStatusColor } from '../src/lib/theme'
 
 type SubmitPhase = 'form' | 'submitting' | 'success' | 'error'
+type SubmitStep = 'idle' | 'geocoding' | 'inserting' | 'uploading' | 'recording'
 
 export default function SubmitComplaintScreen() {
   const router = useRouter()
@@ -27,26 +28,44 @@ export default function SubmitComplaintScreen() {
   const [description, setDescription] = useState('')
   const [damageType, setDamageType] = useState<'pothole' | 'crack' | 'subsidence' | 'other'>('pothole')
   const [phase, setPhase] = useState<SubmitPhase>('form')
+  const [currentStep, setCurrentStep] = useState<SubmitStep>('idle')
   const [submittedId, setSubmittedId] = useState('')
   const [errorMsg, setErrorMsg] = useState('')
 
+  // ── Double-submission guard ───────────────────────────────────────────────
+  // Ref-based guard ensures we never submit twice even if the component
+  // re-renders between the state update and the async operation completing.
+  const isSubmittingRef = useRef(false)
+
+  const getStepLabel = (step: SubmitStep): string => {
+    switch (step) {
+      case 'geocoding': return 'Getting address...'
+      case 'inserting': return 'Creating report...'
+      case 'uploading': return 'Uploading photo...'
+      case 'recording': return 'Recording contribution...'
+      default: return isContributionOnly ? 'Adding your confirmation...' : 'Submitting your report...'
+    }
+  }
+
   const handleSubmit = async () => {
+    // ── Guard against double-tap ──────────────────────────────────────────
+    if (isSubmittingRef.current) return
+    isSubmittingRef.current = true
     setPhase('submitting')
+    setCurrentStep('idle')
+
     try {
+      // ── Get authenticated user ────────────────────────────────────────────
       const { data: { user }, error: userError } = await supabase.auth.getUser()
-      if (userError || !user) throw new Error('Not authenticated')
+      if (userError || !user) throw new Error('Not authenticated. Please sign in and try again.')
 
       let complaintId = existingId ?? ''
-      let storagePath = ''
-
-      // 1. Upload image evidence
-      if (params.imageUri) {
-        const uploaded = await uploadEvidence(params.imageUri, complaintId || 'new', 'photo')
-        if (uploaded) storagePath = uploaded.storagePath
-      }
 
       if (!isContributionOnly) {
-        // 2. Reverse geocode for address label
+        // ── NEW COMPLAINT FLOW ────────────────────────────────────────────
+
+        // Step 1: Reverse geocode (non-blocking — failure is graceful)
+        setCurrentStep('geocoding')
         let addressLabel: string | null = null
         if (hasLocation) {
           try {
@@ -55,10 +74,14 @@ export default function SubmitComplaintScreen() {
               addressLabel = [address.street, address.district, address.city, address.region]
                 .filter(Boolean).join(', ')
             }
-          } catch { /* ignore */ }
+          } catch {
+            // Geocoding failure is non-fatal — complaint submitted without address
+          }
         }
 
-        // 3. Insert complaint
+        // Step 2: Insert complaint record FIRST (before upload)
+        // This ensures we have the complaint ID before constructing the storage path.
+        setCurrentStep('inserting')
         const conf = parseFloat(params.detectionConfidence || '0')
         const { data: complaint, error: insertError } = await supabase
           .from('complaints')
@@ -74,88 +97,143 @@ export default function SubmitComplaintScreen() {
             complaint_status: 'pending_verification',
             description: description.trim() || null,
           })
-          .select()
+          .select('id')
           .single()
 
-        if (insertError) throw new Error(`Complaint insert failed: ${insertError.message}`)
+        if (insertError || !complaint) {
+          throw new Error(`Could not create report: ${insertError?.message ?? 'Unknown error'}`)
+        }
         complaintId = complaint.id
 
-        // 4. Re-upload evidence with correct complaint ID if it was uploaded to 'new'
-        if (storagePath.startsWith('new/')) {
-          // Move is not directly supported; the path is valid as-is for demo
+        // Step 3: Upload image now that we have the real complaint ID
+        setCurrentStep('uploading')
+        if (params.imageUri) {
+          const uploaded = await uploadEvidence(
+            params.imageUri,
+            complaintId,
+            'photo',
+            user.id,
+          )
+
+          if (uploaded) {
+            // Step 4: Record evidence in database
+            const { error: evidenceError } = await supabase.from('complaint_evidence').insert({
+              complaint_id: complaintId,
+              uploaded_by: user.id,
+              storage_path: uploaded.storagePath,
+              evidence_type: 'photo',
+              source: 'user',
+              mime_type: 'image/jpeg',
+              file_size_bytes: uploaded.fileSize,
+            })
+            if (evidenceError) {
+              // Evidence insert failure is logged but not fatal
+              // The complaint already exists and can be reviewed
+              console.warn('[Submit] Evidence insert failed:', evidenceError.message)
+            }
+          } else {
+            // Upload failure is non-fatal — admin can still review the complaint
+            console.warn('[Submit] Image upload failed — complaint created without photo')
+          }
         }
 
-        // 5. Insert evidence record
-        if (storagePath) {
-          await supabase.from('complaint_evidence').insert({
-            complaint_id: complaintId,
-            uploaded_by: user.id,
-            storage_path: storagePath,
-            evidence_type: 'photo',
-            source: 'user',
-          })
-        }
-
-        // 6. Insert original_report contribution
-        await supabase.from('complaint_contributions').insert({
+        // Step 5: Record original_report contribution
+        setCurrentStep('recording')
+        const { error: contribError } = await supabase.from('complaint_contributions').insert({
           complaint_id: complaintId,
           user_id: user.id,
           contribution_type: 'original_report',
           description: description.trim() || null,
         })
+        if (contribError) {
+          console.warn('[Submit] Contribution insert failed:', contribError.message)
+        }
 
-        // 7. Record initial status history
-        await supabase.from('complaint_status_history').insert({
+        // Step 6: Record initial status in history
+        // Note: the auto-trigger also fires, but we add a note here
+        const { error: historyError } = await supabase.from('complaint_status_history').insert({
           complaint_id: complaintId,
           changed_by: user.id,
           old_status: null,
           new_status: 'pending_verification',
           note: 'Complaint submitted by user',
         })
-
-      } else {
-        // Contributing evidence to existing complaint
-        if (!complaintId) throw new Error('No existing complaint ID provided')
-
-        if (storagePath) {
-          await supabase.from('complaint_evidence').insert({
-            complaint_id: complaintId,
-            uploaded_by: user.id,
-            storage_path: storagePath,
-            evidence_type: 'photo',
-            source: 'user',
-          })
+        if (historyError) {
+          // This may fail due to RLS if the trigger fired first — that's OK
+          console.warn('[Submit] Status history insert skipped (trigger may have fired):', historyError.message)
         }
 
-        await supabase.from('complaint_contributions').insert({
+      } else {
+        // ── CONTRIBUTION FLOW ────────────────────────────────────────────
+        if (!complaintId) throw new Error('No existing complaint ID provided for contribution.')
+
+        // Upload supporting evidence
+        setCurrentStep('uploading')
+        if (params.imageUri) {
+          const uploaded = await uploadEvidence(
+            params.imageUri,
+            complaintId,
+            'photo',
+            user.id,
+          )
+
+          if (uploaded) {
+            await supabase.from('complaint_evidence').insert({
+              complaint_id: complaintId,
+              uploaded_by: user.id,
+              storage_path: uploaded.storagePath,
+              evidence_type: 'photo',
+              source: 'user',
+              mime_type: 'image/jpeg',
+              file_size_bytes: uploaded.fileSize,
+            })
+          }
+        }
+
+        // Record confirmation contribution
+        setCurrentStep('recording')
+        const { error: confirmError } = await supabase.from('complaint_contributions').insert({
           complaint_id: complaintId,
           user_id: user.id,
           contribution_type: 'confirmation',
           description: description.trim() || 'User confirmed damage still present',
         })
+
+        if (confirmError) {
+          // Handle unique constraint violation gracefully (already confirmed)
+          if (confirmError.code === '23505') {
+            throw new Error('You have already confirmed this report.')
+          }
+          throw new Error(`Confirmation failed: ${confirmError.message}`)
+        }
       }
 
       setSubmittedId(complaintId)
       setPhase('success')
     } catch (e: any) {
-      setErrorMsg(e.message ?? 'Submission failed. Please try again.')
+      const message = e?.message ?? 'Submission failed. Please try again.'
+      setErrorMsg(message)
       setPhase('error')
+    } finally {
+      // Always release the submission lock, even on error
+      isSubmittingRef.current = false
     }
   }
 
+  // ── Submitting state ─────────────────────────────────────────────────────
   if (phase === 'submitting') {
     return (
       <SafeAreaView style={styles.container}>
         <View style={styles.centerContainer}>
           <ActivityIndicator size="large" color={Colors.accent} />
-          <Text style={styles.submittingText}>
-            {isContributionOnly ? 'Adding your confirmation...' : 'Submitting your report...'}
-          </Text>
+          <Text style={styles.submittingText}>{getStepLabel(currentStep)}</Text>
+          <Text style={styles.submittingHint}>Please keep the app open</Text>
         </View>
       </SafeAreaView>
     )
   }
 
+  // ── Success state ─────────────────────────────────────────────────────────
   if (phase === 'success') {
     const statusInfo = getStatusColor('pending_verification')
     return (
@@ -202,6 +280,7 @@ export default function SubmitComplaintScreen() {
     )
   }
 
+  // ── Error state ───────────────────────────────────────────────────────────
   if (phase === 'error') {
     return (
       <SafeAreaView style={styles.container}>
@@ -217,6 +296,7 @@ export default function SubmitComplaintScreen() {
     )
   }
 
+  // ── Form state ─────────────────────────────────────────────────────────────
   const DAMAGE_TYPES: Array<{ label: string; value: typeof damageType }> = [
     { label: 'Pothole', value: 'pothole' },
     { label: 'Crack', value: 'crack' },
@@ -314,11 +394,13 @@ export default function SubmitComplaintScreen() {
             </Text>
           </View>
 
+          {/* Submit button — disabled during submission to prevent double-tap */}
           <TouchableOpacity
             id="btn-submit-report"
-            style={styles.primaryButton}
+            style={[styles.primaryButton, phase === 'submitting' && styles.primaryButtonDisabled]}
             onPress={handleSubmit}
             activeOpacity={0.85}
+            disabled={phase === 'submitting'}
           >
             <Text style={styles.primaryButtonText}>
               {isContributionOnly ? 'Add Confirmation' : 'Submit Report'}
@@ -362,11 +444,13 @@ const styles = StyleSheet.create({
   disclaimer: { backgroundColor: Colors.surface, borderRadius: BorderRadius.md, padding: Spacing.md, borderWidth: 1, borderColor: Colors.borderLight },
   disclaimerText: { fontSize: Typography.fontSize.xs, color: Colors.textTertiary, lineHeight: 18, textAlign: 'center' },
   primaryButton: { backgroundColor: Colors.accent, borderRadius: BorderRadius.lg, paddingVertical: 15, alignItems: 'center' },
+  primaryButtonDisabled: { opacity: 0.6 },
   primaryButtonText: { fontSize: Typography.fontSize.md, fontWeight: Typography.fontWeight.semibold, color: '#fff' },
   secondaryButton: { borderWidth: 1.5, borderColor: Colors.border, borderRadius: BorderRadius.lg, paddingVertical: 15, alignItems: 'center' },
   secondaryButtonText: { fontSize: Typography.fontSize.md, fontWeight: Typography.fontWeight.medium, color: Colors.textPrimary },
   centerContainer: { flex: 1, justifyContent: 'center', alignItems: 'center', padding: Spacing.xl, gap: Spacing.lg },
   submittingText: { fontSize: Typography.fontSize.md, color: Colors.textSecondary },
+  submittingHint: { fontSize: Typography.fontSize.sm, color: Colors.textTertiary },
   successContainer: { flex: 1, padding: Spacing.xl, alignItems: 'center', gap: Spacing.md, justifyContent: 'center' },
   successIcon: { fontSize: 64 },
   successTitle: { fontSize: Typography.fontSize.xxl, fontWeight: Typography.fontWeight.bold, color: Colors.textPrimary, textAlign: 'center' },
