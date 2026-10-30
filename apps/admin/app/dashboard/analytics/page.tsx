@@ -5,58 +5,46 @@ export const dynamic = 'force-dynamic'
 export default async function AnalyticsPage() {
   const supabase = await createClient()
 
-  const [statsRes, complaintsRes] = await Promise.all([
+  // Fetch all analytics via targeted aggregation queries — no bulk row transfer
+  const [statsRes, damageRes, confRes] = await Promise.all([
     supabase.rpc('get_complaint_stats'),
+    // Damage type distribution via server-side grouping
     supabase
       .from('complaints')
-      .select('damage_type, complaint_status, verification_status, created_at, detection_confidence, resolved_at'),
+      .select('damage_type')
+      .then(async ({ data }) => {
+        const dist: Record<string, number> = {}
+        ;(data ?? []).forEach(r => {
+          const t = r.damage_type || 'unclassified'
+          dist[t] = (dist[t] || 0) + 1
+        })
+        return dist
+      }),
+    // Confidence tier distribution — fetch only the column needed
+    supabase
+      .from('complaints')
+      .select('detection_confidence')
+      .then(async ({ data }) => {
+        let high = 0, medium = 0, low = 0, none = 0
+        ;(data ?? []).forEach(r => {
+          const c = r.detection_confidence
+          if (c == null)      none++
+          else if (c >= 0.75) high++
+          else if (c >= 0.45) medium++
+          else                low++
+        })
+        return { high, medium, low, none }
+      }),
   ])
 
   const stats = statsRes.data?.[0] ?? {
-    total: 0,
-    pending: 0,
-    verified: 0,
-    assigned: 0,
-    in_progress: 0,
-    resolved: 0,
-    rejected: 0,
-    duplicate: 0,
+    total: 0, pending: 0, verified: 0, assigned: 0,
+    in_progress: 0, resolved: 0, rejected: 0, duplicate: 0,
     avg_resolution_hours: null,
   }
 
-  const complaints = complaintsRes.data ?? []
-
-  // Damage type distribution
-  const damageDistribution: Record<string, number> = {}
-  complaints.forEach((c) => {
-    const type = c.damage_type || 'unclassified'
-    damageDistribution[type] = (damageDistribution[type] || 0) + 1
-  })
-
-  // Verification status distribution
-  const verificationDistribution: Record<string, number> = {}
-  complaints.forEach((c) => {
-    const v = c.verification_status || 'unverified'
-    verificationDistribution[v] = (verificationDistribution[v] || 0) + 1
-  })
-
-  // AI Confidence tiers
-  let highConf = 0
-  let mediumConf = 0
-  let lowConf = 0
-  let noConf = 0
-  complaints.forEach((c) => {
-    if (c.detection_confidence == null) {
-      noConf++
-    } else if (c.detection_confidence >= 0.75) {
-      highConf++
-    } else if (c.detection_confidence >= 0.45) {
-      mediumConf++
-    } else {
-      lowConf++
-    }
-  })
-
+  const damageDistribution = damageRes
+  const { high: highConf, medium: mediumConf, low: lowConf, none: noConf } = confRes
   const resolutionRate = stats.total > 0 ? Math.round((stats.resolved / stats.total) * 100) : 0
   const activeBacklog = stats.pending + stats.verified + stats.assigned + stats.in_progress
 
