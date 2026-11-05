@@ -1,0 +1,20 @@
+{
+  "name": "roadguard-tests",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Integration tests for RoadGuard multi-user and security",
+  "scripts": {
+    "test:multi-user": "ts-node --esm multi-user.test.ts",
+    "test:security": "ts-node --esm security.test.ts",
+    "test:all": "npm run test:multi-user && npm run test:security"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.49.0"
+  },
+  "devDependencies": {
+    "ts-node": "^10.9.2",
+    "typescript": "^5.3.3",
+    "@types/node": "^20.11.5"
+  },
+  "type": "module"
+}
