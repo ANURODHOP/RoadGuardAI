@@ -33,7 +33,30 @@ Built as a college year-end project, RoadGuard combines **offline YOLO-based obj
 
 ---
 
-## 🌍 Overview
+## 🔒 Production Hardening (v2.0 — Multi-User Ready)
+
+The following improvements were applied after the initial release to make the app ready for multiple concurrent users:
+
+| # | Area | Fix |
+|---|---|---|
+| 1 | **Security** | Corrected `SUPABASE_URL` format — removed erroneous `/rest/v1/` suffix that was causing silent SDK fallback |
+| 2 | **Security** | `record_status_change` trigger marked `SECURITY DEFINER` — allows DB trigger to write status history without being blocked by auth-context RLS |
+| 3 | **Security** | `nearby_complaints()` RPC now requires authentication — rejects unauthenticated callers |
+| 4 | **Security** | Added column-restriction trigger `enforce_complaint_update_columns` — regular users can only change `description` even if RLS update policy passes |
+| 5 | **Bug Fix** | Complaint submission now creates the DB record **first**, then uploads evidence to `complaints/{id}/{userId}/...` — previously images uploaded to `new/...` path creating orphaned files |
+| 6 | **Bug Fix** | Added `isSubmittingRef` guard in submit screen — prevents double-complaint creation on rapid double-tap |
+| 7 | **Performance** | Home screen `fetchMine()` replaced unbounded `select('*')` with `limit(3)` + three separate `count` queries (zero row data transfer for stats) |
+| 8 | **Performance** | Reports screen uses server-side paginated RPC `get_my_complaints_page()` with infinite scroll |
+| 9 | **Performance** | Admin complaints page converted to Server Component with URL-driven pagination (25 rows/page, DB-side filtering) |
+| 10 | **Performance** | Analytics page replaced single unbounded query with two targeted single-column queries |
+| 11 | **Quality** | ONNX inference: added greedy NMS to remove duplicate bounding boxes; added concurrent load guard; improved JPEG SOS byte scanning |
+| 12 | **Quality** | Evidence upload validates file type (jpeg/png/webp/heic) and size (≤10MB) before attempting upload |
+| 13 | **DB Migrations** | `003_rls_fixes.sql` — strengthens all RLS policies |
+| 14 | **DB Migrations** | `004_pagination_helpers.sql` — adds `get_complaints_page()`, `get_my_complaints_page()`, `get_map_complaints()`, composite indexes |
+
+See `supabase/migrations/003_rls_fixes.sql` and `004_pagination_helpers.sql` for the full DB changes.
+
+---
 
 Potholes and damaged road surfaces can create safety risks for motorists, cyclists, and pedestrians. Reporting these issues manually can be inconvenient, and multiple people may submit complaints about the same location without knowing that a report already exists.
 
@@ -543,7 +566,32 @@ Test the complete application rather than only individual screens.
 
 Record actual test results and document failures. Do not claim that a test passed unless it has been executed.
 
----
+### Integration Tests (Automated)
+
+This project includes TypeScript integration tests that run against the live Supabase backend.
+
+**Setup:**
+```powershell
+cd tests
+npm install
+
+# Set environment variables
+$env:SUPABASE_URL              = "https://kvuxdgrrhranczidpowf.supabase.co"
+$env:SUPABASE_ANON_KEY         = "<your anon key>"
+$env:SUPABASE_SERVICE_ROLE_KEY = "<your service role key>"
+```
+
+**Run:**
+```powershell
+# Multi-user isolation tests (7 test groups, ~28 assertions)
+npx ts-node --esm multi-user.test.ts
+
+# Security / RLS tests (6 test groups, ~15 assertions)
+npx ts-node --esm security.test.ts
+```
+
+Tests automatically create and clean up temporary users and complaints. See `tests/README.md` for full documentation.
+
 
 ## 📱 Android Demonstration
 
