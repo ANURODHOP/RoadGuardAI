@@ -394,13 +394,12 @@ export default function SubmitComplaintScreen() {
             </Text>
           </View>
 
-          {/* Submit button — disabled during submission to prevent double-tap */}
+          {/* Submit button — guarded against double-tap via isSubmittingRef */}
           <TouchableOpacity
             id="btn-submit-report"
-            style={[styles.primaryButton, phase === 'submitting' && styles.primaryButtonDisabled]}
+            style={styles.primaryButton}
             onPress={handleSubmit}
             activeOpacity={0.85}
-            disabled={phase === 'submitting'}
           >
             <Text style={styles.primaryButtonText}>
               {isContributionOnly ? 'Add Confirmation' : 'Submit Report'}
