@@ -29,7 +29,8 @@
           "locationAlwaysAndWhenInUsePermission": "RoadGuard needs your location to accurately place your road damage report on the map.",
           "locationWhenInUsePermission": "RoadGuard needs your location to accurately place your road damage report on the map."
         }
-      ]
+      ],
+      "expo-image"
     ],
     "ios": {
       "supportsTablet": false,
@@ -42,7 +43,8 @@
     },
     "android": {
       "adaptiveIcon": {
-        "foregroundImage": "./assets/adaptive-icon.png",
+        "foregroundImage": "./assets/android-icon-foreground.png",
+        "backgroundImage": "./assets/android-icon-background.png",
         "backgroundColor": "#FFFFFF"
       },
       "package": "com.roadguard.app",

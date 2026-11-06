@@ -1,3 +1,4 @@
+import './onnx-polyfill'
 import { Asset } from 'expo-asset'
 import * as FileSystem from 'expo-file-system'
 import { manipulateAsync, SaveFormat } from 'expo-image-manipulator'
