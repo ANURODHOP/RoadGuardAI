@@ -14,6 +14,7 @@
     "admin": "npm --prefix apps/admin run dev",
     "admin:build": "npm --prefix apps/admin run build",
     "admin:start": "npm --prefix apps/admin run start",
+    "admin:create-user": "node scripts/create_admin.js",
     "test:ml": "python ml/scripts/test_inference.py"
   },
   "keywords": [

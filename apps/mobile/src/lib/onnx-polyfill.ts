@@ -1,8 +1,7 @@
-import { NativeModules } from 'react-native'
-
 // Polyfill for onnxruntime-react-native in environments without custom native C++ code (e.g. Expo Go).
-// onnxruntime-react-native's binding.ts calls Module.install() unconditionally if globalThis.OrtApi is undefined.
-// In Expo Go, NativeModules.Onnxruntime is null, which throws an uncaught TypeError on startup.
+// onnxruntime-react-native's binding.ts calls Module.install() if globalThis.OrtApi is undefined.
+// In Expo Go, the custom native module is null, which throws an uncaught TypeError on startup.
+// By defining globalThis.OrtApi beforehand, binding.ts completely skips calling Module.install().
 
 if (typeof (globalThis as any).OrtApi === 'undefined') {
   (globalThis as any).OrtApi = new Proxy(
@@ -22,12 +21,4 @@ if (typeof (globalThis as any).OrtApi === 'undefined') {
       },
     }
   )
-}
-
-if (NativeModules && !NativeModules.Onnxruntime) {
-  NativeModules.Onnxruntime = {
-    install: () => {
-      // No-op fallback
-    },
-  }
 }
