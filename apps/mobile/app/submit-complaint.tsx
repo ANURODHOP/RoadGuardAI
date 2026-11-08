@@ -1,12 +1,13 @@
-import React, { useState, useRef } from 'react'
+import React, { useState, useRef, useCallback } from 'react'
 import {
   View, Text, StyleSheet, TouchableOpacity, SafeAreaView,
-  ScrollView, TextInput, ActivityIndicator, Image, Alert,
+  ScrollView, TextInput, ActivityIndicator, Image, Alert, BackHandler,
 } from 'react-native'
 import * as Location from 'expo-location'
 import { useLocalSearchParams, useRouter } from 'expo-router'
+import { useFocusEffect } from '@react-navigation/native'
 import { supabase, uploadEvidence } from '../src/lib/supabase'
-import { Colors, Typography, Spacing, BorderRadius, getStatusColor } from '../src/lib/theme'
+import { Colors, Typography, Spacing, BorderRadius, getStatusColor, Shadows } from '../src/lib/theme'
 
 type SubmitPhase = 'form' | 'submitting' | 'success' | 'error'
 type SubmitStep = 'idle' | 'geocoding' | 'inserting' | 'uploading' | 'recording'
@@ -14,9 +15,17 @@ type SubmitStep = 'idle' | 'geocoding' | 'inserting' | 'uploading' | 'recording'
 export default function SubmitComplaintScreen() {
   const router = useRouter()
   const params = useLocalSearchParams<{
-    imageUri: string; lat: string; lon: string; accuracy: string;
-    detectionState: string; detectionConfidence: string;
-    existingComplaintId?: string; contributionOnly?: string;
+    imageUri: string
+    lat: string
+    lon: string
+    accuracy: string
+    isManual?: string
+    addressLabel?: string
+    detectionState: string
+    detectionConfidence: string
+    existingComplaintId?: string
+    contributionOnly?: string
+    adminReviewRequested?: string
   }>()
 
   const lat = parseFloat(params.lat || '0')
@@ -24,6 +33,7 @@ export default function SubmitComplaintScreen() {
   const hasLocation = !isNaN(lat) && lat !== 0
   const isContributionOnly = params.contributionOnly === 'true'
   const existingId = params.existingComplaintId
+  const isManuallySelected = params.isManual === 'true'
 
   const [description, setDescription] = useState('')
   const [damageType, setDamageType] = useState<'pothole' | 'crack' | 'subsidence' | 'other'>('pothole')
@@ -32,65 +42,94 @@ export default function SubmitComplaintScreen() {
   const [submittedId, setSubmittedId] = useState('')
   const [errorMsg, setErrorMsg] = useState('')
 
-  // ── Double-submission guard ───────────────────────────────────────────────
-  // Ref-based guard ensures we never submit twice even if the component
-  // re-renders between the state update and the async operation completing.
+  // Double-submission lock
   const isSubmittingRef = useRef(false)
+
+  // Android Back Handler: confirm before discarding report if user entered text
+  const handleBack = useCallback(() => {
+    if (description.trim().length > 0) {
+      Alert.alert(
+        'Discard Report?',
+        'You have unsaved changes. Are you sure you want to go back?',
+        [
+          { text: 'Keep Editing', style: 'cancel' },
+          { text: 'Discard', style: 'destructive', onPress: () => router.back() },
+        ]
+      )
+    } else {
+      router.back()
+    }
+  }, [description, router])
+
+  useFocusEffect(
+    useCallback(() => {
+      const onBackPress = () => {
+        handleBack()
+        return true
+      }
+      const subscription = BackHandler.addEventListener('hardwareBackPress', onBackPress)
+      return () => subscription.remove()
+    }, [handleBack])
+  )
 
   const getStepLabel = (step: SubmitStep): string => {
     switch (step) {
-      case 'geocoding': return 'Getting address...'
-      case 'inserting': return 'Creating report...'
-      case 'uploading': return 'Uploading photo...'
-      case 'recording': return 'Recording contribution...'
-      default: return isContributionOnly ? 'Adding your confirmation...' : 'Submitting your report...'
+      case 'geocoding': return 'Resolving location...'
+      case 'inserting': return 'Creating database record...'
+      case 'uploading': return 'Uploading evidence photo...'
+      case 'recording': return 'Recording audit history...'
+      default: return isContributionOnly ? 'Adding supporting contribution...' : 'Submitting complaint...'
     }
   }
 
   const handleSubmit = async () => {
-    // ── Guard against double-tap ──────────────────────────────────────────
     if (isSubmittingRef.current) return
     isSubmittingRef.current = true
     setPhase('submitting')
     setCurrentStep('idle')
 
     try {
-      // ── Get authenticated user ────────────────────────────────────────────
+      // 1. Validate user session
       const { data: { user }, error: userError } = await supabase.auth.getUser()
-      if (userError || !user) throw new Error('Not authenticated. Please sign in and try again.')
+      if (userError || !user) {
+        throw new Error('You must be signed in to submit a complaint. Please log in.')
+      }
+
+      // 2. Validate coordinates
+      if (!hasLocation) {
+        throw new Error('Valid GPS coordinates or map location are required.')
+      }
 
       let complaintId = existingId ?? ''
 
       if (!isContributionOnly) {
-        // ── NEW COMPLAINT FLOW ────────────────────────────────────────────
+        // ── NEW COMPLAINT FLOW ──────────────────────────────────────────
 
-        // Step 1: Reverse geocode (non-blocking — failure is graceful)
+        // Step 1: Use passed address or reverse geocode if empty
         setCurrentStep('geocoding')
-        let addressLabel: string | null = null
-        if (hasLocation) {
+        let finalAddress = params.addressLabel || null
+        if (!finalAddress && hasLocation) {
           try {
-            const [address] = await Location.reverseGeocodeAsync({ latitude: lat, longitude: lon })
-            if (address) {
-              addressLabel = [address.street, address.district, address.city, address.region]
-                .filter(Boolean).join(', ')
+            const [geo] = await Location.reverseGeocodeAsync({ latitude: lat, longitude: lon })
+            if (geo) {
+              finalAddress = [geo.street, geo.district || geo.subregion, geo.city, geo.region].filter(Boolean).join(', ')
             }
           } catch {
-            // Geocoding failure is non-fatal — complaint submitted without address
+            // graceful fallback
           }
         }
 
-        // Step 2: Insert complaint record FIRST (before upload)
-        // This ensures we have the complaint ID before constructing the storage path.
+        // Step 2: Insert complaint into Supabase
         setCurrentStep('inserting')
         const conf = parseFloat(params.detectionConfidence || '0')
         const { data: complaint, error: insertError } = await supabase
           .from('complaints')
           .insert({
             reporter_id: user.id,
-            latitude: hasLocation ? lat : 0,
-            longitude: hasLocation ? lon : 0,
-            location_accuracy_m: params.accuracy ? parseFloat(params.accuracy) : null,
-            address_label: addressLabel,
+            latitude: lat,
+            longitude: lon,
+            location_accuracy_m: isManuallySelected ? null : (params.accuracy ? parseFloat(params.accuracy) : null),
+            address_label: finalAddress,
             damage_type: damageType,
             detection_confidence: conf > 0 ? conf : null,
             verification_status: 'pending_verification',
@@ -101,11 +140,11 @@ export default function SubmitComplaintScreen() {
           .single()
 
         if (insertError || !complaint) {
-          throw new Error(`Could not create report: ${insertError?.message ?? 'Unknown error'}`)
+          throw new Error(`Failed to create report: ${insertError?.message ?? 'Unknown database error'}`)
         }
         complaintId = complaint.id
 
-        // Step 3: Upload image now that we have the real complaint ID
+        // Step 3: Upload photo to Supabase storage
         setCurrentStep('uploading')
         if (params.imageUri) {
           const uploaded = await uploadEvidence(
@@ -116,7 +155,7 @@ export default function SubmitComplaintScreen() {
           )
 
           if (uploaded) {
-            // Step 4: Record evidence in database
+            // Step 4: Record evidence in complaint_evidence
             const { error: evidenceError } = await supabase.from('complaint_evidence').insert({
               complaint_id: complaintId,
               uploaded_by: user.id,
@@ -127,47 +166,28 @@ export default function SubmitComplaintScreen() {
               file_size_bytes: uploaded.fileSize,
             })
             if (evidenceError) {
-              // Evidence insert failure is logged but not fatal
-              // The complaint already exists and can be reviewed
-              console.warn('[Submit] Evidence insert failed:', evidenceError.message)
+              console.warn('[Submit] Evidence insert note:', evidenceError.message)
             }
-          } else {
-            // Upload failure is non-fatal — admin can still review the complaint
-            console.warn('[Submit] Image upload failed — complaint created without photo')
           }
         }
 
-        // Step 5: Record original_report contribution
+        // Step 5: Record original contribution
         setCurrentStep('recording')
-        const { error: contribError } = await supabase.from('complaint_contributions').insert({
-          complaint_id: complaintId,
-          user_id: user.id,
-          contribution_type: 'original_report',
-          description: description.trim() || null,
-        })
-        if (contribError) {
-          console.warn('[Submit] Contribution insert failed:', contribError.message)
-        }
-
-        // Step 6: Record initial status in history
-        // Note: the auto-trigger also fires, but we add a note here
-        const { error: historyError } = await supabase.from('complaint_status_history').insert({
-          complaint_id: complaintId,
-          changed_by: user.id,
-          old_status: null,
-          new_status: 'pending_verification',
-          note: 'Complaint submitted by user',
-        })
-        if (historyError) {
-          // This may fail due to RLS if the trigger fired first — that's OK
-          console.warn('[Submit] Status history insert skipped (trigger may have fired):', historyError.message)
+        try {
+          await supabase.from('complaint_contributions').insert({
+            complaint_id: complaintId,
+            user_id: user.id,
+            contribution_type: 'original_report',
+            description: description.trim() || null,
+          })
+        } catch {
+          // Non-critical: contribution record failed but complaint succeeded
         }
 
       } else {
-        // ── CONTRIBUTION FLOW ────────────────────────────────────────────
-        if (!complaintId) throw new Error('No existing complaint ID provided for contribution.')
+        // ── CONTRIBUTION FLOW (Confirming Existing Complaint) ─────────────
+        if (!complaintId) throw new Error('Existing complaint ID is missing for contribution.')
 
-        // Upload supporting evidence
         setCurrentStep('uploading')
         if (params.imageUri) {
           const uploaded = await uploadEvidence(
@@ -190,19 +210,18 @@ export default function SubmitComplaintScreen() {
           }
         }
 
-        // Record confirmation contribution
+        // Record confirmation
         setCurrentStep('recording')
         const { error: confirmError } = await supabase.from('complaint_contributions').insert({
           complaint_id: complaintId,
           user_id: user.id,
           contribution_type: 'confirmation',
-          description: description.trim() || 'User confirmed damage still present',
+          description: description.trim() || 'Citizen confirmed damage is still present',
         })
 
         if (confirmError) {
-          // Handle unique constraint violation gracefully (already confirmed)
           if (confirmError.code === '23505') {
-            throw new Error('You have already confirmed this report.')
+            throw new Error('You have already confirmed this existing complaint.')
           }
           throw new Error(`Confirmation failed: ${confirmError.message}`)
         }
@@ -211,29 +230,27 @@ export default function SubmitComplaintScreen() {
       setSubmittedId(complaintId)
       setPhase('success')
     } catch (e: any) {
-      const message = e?.message ?? 'Submission failed. Please try again.'
-      setErrorMsg(message)
+      setErrorMsg(e?.message ?? 'Submission encountered an error. Please try again.')
       setPhase('error')
     } finally {
-      // Always release the submission lock, even on error
       isSubmittingRef.current = false
     }
   }
 
-  // ── Submitting state ─────────────────────────────────────────────────────
+  // ── Submitting State ─────────────────────────────────────────────────────
   if (phase === 'submitting') {
     return (
       <SafeAreaView style={styles.container}>
         <View style={styles.centerContainer}>
           <ActivityIndicator size="large" color={Colors.accent} />
           <Text style={styles.submittingText}>{getStepLabel(currentStep)}</Text>
-          <Text style={styles.submittingHint}>Please keep the app open</Text>
+          <Text style={styles.submittingHint}>Please keep RoadGuard open while uploading</Text>
         </View>
       </SafeAreaView>
     )
   }
 
-  // ── Success state ─────────────────────────────────────────────────────────
+  // ── Success State ─────────────────────────────────────────────────────────
   if (phase === 'success') {
     const statusInfo = getStatusColor('pending_verification')
     return (
@@ -241,16 +258,16 @@ export default function SubmitComplaintScreen() {
         <View style={styles.successContainer}>
           <Text style={styles.successIcon}>✅</Text>
           <Text style={styles.successTitle}>
-            {isContributionOnly ? 'Confirmation Added' : 'Report Submitted'}
+            {isContributionOnly ? 'Evidence Confirmed' : 'Complaint Submitted'}
           </Text>
           <Text style={styles.successDesc}>
             {isContributionOnly
-              ? 'Your supporting evidence has been added to the existing report.'
-              : 'Your complaint has been submitted and is pending administrator review.'}
+              ? 'Your confirmation and photo have been added to the report for administrator review.'
+              : 'Your road hazard complaint has been registered in the municipal database.'}
           </Text>
 
-          <View style={styles.successCard}>
-            <Text style={styles.successRefLabel}>Reference ID</Text>
+          <View style={[styles.successCard, Shadows.md]}>
+            <Text style={styles.successRefLabel}>Complaint Reference ID</Text>
             <Text style={styles.successRefId}>#{submittedId.slice(0, 8).toUpperCase()}</Text>
             <View style={[styles.statusPill, { backgroundColor: statusInfo.bg }]}>
               <Text style={[styles.statusPillText, { color: statusInfo.text }]}>{statusInfo.label}</Text>
@@ -259,28 +276,32 @@ export default function SubmitComplaintScreen() {
           </View>
 
           <Text style={styles.successNote}>
-            You will be able to track your report status in My Reports. Administrators review complaints and update status as work progresses.
+            You can track inspection updates, work assignments, and repair resolution anytime in the My Reports tab.
           </Text>
 
           <TouchableOpacity
-            id="btn-view-reports"
+            id="btn-view-submitted-complaint"
             style={styles.primaryButton}
-            onPress={() => router.replace('/(tabs)/reports')}
+            onPress={() => router.replace(`/complaint/${submittedId}`)}
+            activeOpacity={0.85}
           >
-            <Text style={styles.primaryButtonText}>View My Reports</Text>
+            <Text style={styles.primaryButtonText}>View Complaint Details</Text>
           </TouchableOpacity>
+
           <TouchableOpacity
+            id="btn-return-home-after-submit"
             style={styles.secondaryButton}
             onPress={() => router.replace('/(tabs)/')}
+            activeOpacity={0.85}
           >
-            <Text style={styles.secondaryButtonText}>Back to Home</Text>
+            <Text style={styles.secondaryButtonText}>Return to Home</Text>
           </TouchableOpacity>
         </View>
       </SafeAreaView>
     )
   }
 
-  // ── Error state ───────────────────────────────────────────────────────────
+  // ── Error State ───────────────────────────────────────────────────────────
   if (phase === 'error') {
     return (
       <SafeAreaView style={styles.container}>
@@ -289,66 +310,81 @@ export default function SubmitComplaintScreen() {
           <Text style={styles.errorTitle}>Submission Failed</Text>
           <Text style={styles.errorDesc}>{errorMsg}</Text>
           <TouchableOpacity style={styles.primaryButton} onPress={() => setPhase('form')}>
-            <Text style={styles.primaryButtonText}>Try Again</Text>
+            <Text style={styles.primaryButtonText}>Review & Try Again</Text>
           </TouchableOpacity>
         </View>
       </SafeAreaView>
     )
   }
 
-  // ── Form state ─────────────────────────────────────────────────────────────
+  // ── Form State ─────────────────────────────────────────────────────────────
   const DAMAGE_TYPES: Array<{ label: string; value: typeof damageType }> = [
     { label: 'Pothole', value: 'pothole' },
-    { label: 'Crack', value: 'crack' },
+    { label: 'Road Crack', value: 'crack' },
     { label: 'Subsidence', value: 'subsidence' },
-    { label: 'Other', value: 'other' },
+    { label: 'Other Hazard', value: 'other' },
   ]
 
   return (
     <SafeAreaView style={styles.container}>
       <View style={styles.header}>
-        <TouchableOpacity onPress={() => router.back()}>
+        <TouchableOpacity id="btn-back-from-submit" onPress={handleBack}>
           <Text style={styles.backText}>← Back</Text>
         </TouchableOpacity>
         <Text style={styles.headerTitle}>
-          {isContributionOnly ? 'Confirm Existing Report' : 'Submit Report'}
+          {isContributionOnly ? 'Confirm Existing Report' : 'Review & Submit Report'}
         </Text>
       </View>
 
-      <ScrollView showsVerticalScrollIndicator={false}>
-        {/* Image preview */}
+      <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.scrollContent}>
+        {/* Photo thumbnail */}
         {params.imageUri && (
-          <Image source={{ uri: params.imageUri }} style={styles.previewImage} resizeMode="cover" />
+          <View style={styles.previewContainer}>
+            <Image source={{ uri: params.imageUri }} style={styles.previewImage} resizeMode="cover" />
+          </View>
         )}
 
-        {/* Summary row */}
-        <View style={styles.summaryRow}>
-          {hasLocation && (
-            <View style={styles.summaryItem}>
-              <Text style={styles.summaryIcon}>📍</Text>
-              <Text style={styles.summaryText}>
-                {lat.toFixed(4)}, {lon.toFixed(4)}
+        {/* Location & AI summary badges */}
+        <View style={styles.summaryCard}>
+          <View style={styles.summaryRow}>
+            <Text style={styles.summaryLabel}>Location:</Text>
+            <View style={[
+              styles.accuracyPill,
+              isManuallySelected ? styles.accuracyPillManual : styles.accuracyPillGps
+            ]}>
+              <Text style={[
+                styles.accuracyPillText,
+                isManuallySelected ? styles.accuracyPillTextManual : styles.accuracyPillTextGps
+              ]}>
+                {isManuallySelected ? '✋ Manually Selected' : `📍 GPS (±${Math.round(parseFloat(params.accuracy || '10'))}m)`}
               </Text>
             </View>
-          )}
+          </View>
+          <Text style={styles.summaryCoords}>{lat.toFixed(6)}, {lon.toFixed(6)}</Text>
+          {params.addressLabel ? (
+            <Text style={styles.summaryAddress}>{params.addressLabel}</Text>
+          ) : null}
+
           {params.detectionState && (
-            <View style={styles.summaryItem}>
-              <Text style={styles.summaryIcon}>🤖</Text>
-              <Text style={styles.summaryText}>
-                {params.detectionState === 'pothole_detected' ? 'Damage flagged by AI'
-                  : params.detectionState === 'uncertain_low_confidence' ? 'AI uncertain'
-                  : 'AI: no damage found'}
+            <View style={styles.aiResultRow}>
+              <Text style={styles.summaryLabel}>AI Assessment:</Text>
+              <Text style={styles.aiResultValue}>
+                {params.detectionState === 'pothole_detected'
+                  ? `Pothole flagged (${Math.round(parseFloat(params.detectionConfidence || '0') * 100)}% conf)`
+                  : params.detectionState === 'uncertain_low_confidence'
+                  ? 'Uncertain (low confidence)'
+                  : 'Manual review required'}
               </Text>
             </View>
           )}
         </View>
 
         <View style={styles.form}>
-          {/* Damage type */}
+          {/* Damage Type Selection */}
           {!isContributionOnly && (
             <View style={styles.fieldGroup}>
-              <Text style={styles.fieldLabel}>Damage Type</Text>
-              <View style={styles.typeRow}>
+              <Text style={styles.fieldLabel}>Damage Category</Text>
+              <View style={styles.typeGrid}>
                 {DAMAGE_TYPES.map(t => (
                   <TouchableOpacity
                     key={t.value}
@@ -365,17 +401,17 @@ export default function SubmitComplaintScreen() {
             </View>
           )}
 
-          {/* Description */}
+          {/* Description Input */}
           <View style={styles.fieldGroup}>
             <Text style={styles.fieldLabel}>
-              Description <Text style={styles.fieldOptional}>(optional)</Text>
+              Description <Text style={styles.fieldOptional}>(optional details for inspectors)</Text>
             </Text>
             <TextInput
               id="input-description"
               style={styles.textArea}
               placeholder={isContributionOnly
-                ? 'Describe what you see — is damage still present?'
-                : 'Describe the damage — size, depth, specific location...'}
+                ? 'Describe what you observed — e.g. pothole depth, water pooling...'
+                : 'Provide details — e.g. near junction, in left lane, approx 2ft wide...'}
               placeholderTextColor={Colors.textTertiary}
               value={description}
               onChangeText={setDescription}
@@ -385,16 +421,14 @@ export default function SubmitComplaintScreen() {
             />
           </View>
 
-          {/* Disclaimer */}
+          {/* Legal Notice */}
           <View style={styles.disclaimer}>
             <Text style={styles.disclaimerText}>
-              {isContributionOnly
-                ? 'Your confirmation will be added to the existing report and visible to administrators.'
-                : 'Your report will be reviewed by an administrator. AI detection results are provided as supporting information only — verification is not automatic.'}
+              By submitting, you certify that this photo represents real road conditions at the indicated coordinates. False or spam submissions may result in account restrictions.
             </Text>
           </View>
 
-          {/* Submit button — guarded against double-tap via isSubmittingRef */}
+          {/* Submit Action */}
           <TouchableOpacity
             id="btn-submit-report"
             style={styles.primaryButton}
@@ -402,11 +436,12 @@ export default function SubmitComplaintScreen() {
             activeOpacity={0.85}
           >
             <Text style={styles.primaryButtonText}>
-              {isContributionOnly ? 'Add Confirmation' : 'Submit Report'}
+              {isContributionOnly ? 'Submit Supporting Evidence' : 'Submit Road Complaint'}
             </Text>
           </TouchableOpacity>
         </View>
-        <View style={{ height: Spacing.xl }} />
+
+        <View style={{ height: Spacing.xxl }} />
       </ScrollView>
     </SafeAreaView>
   )
@@ -418,50 +453,147 @@ const styles = StyleSheet.create({
     flexDirection: 'row', alignItems: 'center', gap: Spacing.md,
     paddingHorizontal: Spacing.lg, paddingVertical: Spacing.md,
     borderBottomWidth: 1, borderBottomColor: Colors.border,
+    backgroundColor: Colors.background,
   },
   backText: { fontSize: Typography.fontSize.md, color: Colors.accent, fontWeight: Typography.fontWeight.medium },
   headerTitle: { fontSize: Typography.fontSize.lg, fontWeight: Typography.fontWeight.semibold, color: Colors.textPrimary },
-  previewImage: { width: '100%', height: 200 },
-  summaryRow: { flexDirection: 'row', flexWrap: 'wrap', gap: Spacing.sm, padding: Spacing.lg, borderBottomWidth: 1, borderBottomColor: Colors.borderLight },
-  summaryItem: { flexDirection: 'row', alignItems: 'center', gap: Spacing.xs, backgroundColor: Colors.surface, paddingHorizontal: Spacing.sm, paddingVertical: 6, borderRadius: BorderRadius.full, borderWidth: 1, borderColor: Colors.border },
-  summaryIcon: { fontSize: 14 },
-  summaryText: { fontSize: Typography.fontSize.xs, color: Colors.textSecondary },
-  form: { padding: Spacing.lg, gap: Spacing.lg },
-  fieldGroup: { gap: Spacing.xs },
-  fieldLabel: { fontSize: Typography.fontSize.sm, fontWeight: Typography.fontWeight.medium, color: Colors.textSecondary },
-  fieldOptional: { fontWeight: Typography.fontWeight.regular, color: Colors.textTertiary },
-  typeRow: { flexDirection: 'row', flexWrap: 'wrap', gap: Spacing.xs },
-  typeBtn: { paddingHorizontal: Spacing.md, paddingVertical: 8, borderRadius: BorderRadius.full, backgroundColor: Colors.surface, borderWidth: 1, borderColor: Colors.border },
-  typeBtnActive: { backgroundColor: Colors.accent, borderColor: Colors.accent },
-  typeBtnText: { fontSize: Typography.fontSize.sm, color: Colors.textSecondary, fontWeight: Typography.fontWeight.medium },
-  typeBtnTextActive: { color: '#fff' },
-  textArea: {
-    backgroundColor: Colors.surface, borderRadius: BorderRadius.md, borderWidth: 1, borderColor: Colors.border,
-    paddingHorizontal: Spacing.md, paddingVertical: Spacing.md,
-    fontSize: Typography.fontSize.md, color: Colors.textPrimary, minHeight: 100,
+  scrollContent: { paddingBottom: Spacing.xl },
+  previewContainer: {
+    height: 200,
+    backgroundColor: Colors.surface,
+    borderBottomWidth: 1,
+    borderBottomColor: Colors.border,
   },
-  disclaimer: { backgroundColor: Colors.surface, borderRadius: BorderRadius.md, padding: Spacing.md, borderWidth: 1, borderColor: Colors.borderLight },
-  disclaimerText: { fontSize: Typography.fontSize.xs, color: Colors.textTertiary, lineHeight: 18, textAlign: 'center' },
-  primaryButton: { backgroundColor: Colors.accent, borderRadius: BorderRadius.lg, paddingVertical: 15, alignItems: 'center' },
-  primaryButtonDisabled: { opacity: 0.6 },
-  primaryButtonText: { fontSize: Typography.fontSize.md, fontWeight: Typography.fontWeight.semibold, color: '#fff' },
-  secondaryButton: { borderWidth: 1.5, borderColor: Colors.border, borderRadius: BorderRadius.lg, paddingVertical: 15, alignItems: 'center' },
+  previewImage: { width: '100%', height: '100%' },
+  summaryCard: {
+    margin: Spacing.lg,
+    backgroundColor: Colors.surface,
+    borderRadius: BorderRadius.lg,
+    padding: Spacing.md,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    gap: 4,
+  },
+  summaryRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 2,
+  },
+  summaryLabel: {
+    fontSize: Typography.fontSize.xs,
+    fontWeight: Typography.fontWeight.semibold,
+    color: Colors.textSecondary,
+    textTransform: 'uppercase',
+  },
+  accuracyPill: {
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    borderRadius: BorderRadius.full,
+  },
+  accuracyPillGps: { backgroundColor: '#DCFCE7' },
+  accuracyPillManual: { backgroundColor: '#FEF3C7' },
+  accuracyPillText: { fontSize: 10, fontWeight: Typography.fontWeight.bold },
+  accuracyPillTextGps: { color: '#166534' },
+  accuracyPillTextManual: { color: '#B45309' },
+  summaryCoords: {
+    fontSize: Typography.fontSize.sm,
+    fontFamily: 'monospace',
+    color: Colors.textPrimary,
+  },
+  summaryAddress: {
+    fontSize: Typography.fontSize.xs,
+    color: Colors.textSecondary,
+    marginTop: 2,
+  },
+  aiResultRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.xs,
+    marginTop: 6,
+    paddingTop: 6,
+    borderTopWidth: 1,
+    borderTopColor: Colors.borderLight,
+  },
+  aiResultValue: {
+    fontSize: Typography.fontSize.xs,
+    color: Colors.accent,
+    fontWeight: Typography.fontWeight.medium,
+  },
+  form: { paddingHorizontal: Spacing.lg, gap: Spacing.lg },
+  fieldGroup: { gap: Spacing.xs },
+  fieldLabel: { fontSize: Typography.fontSize.sm, fontWeight: Typography.fontWeight.semibold, color: Colors.textPrimary },
+  fieldOptional: { fontSize: Typography.fontSize.xs, color: Colors.textTertiary, fontWeight: Typography.fontWeight.regular },
+  typeGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: Spacing.sm },
+  typeBtn: {
+    flexBasis: '48%',
+    paddingVertical: 12,
+    alignItems: 'center',
+    borderRadius: BorderRadius.md,
+    backgroundColor: Colors.surface,
+    borderWidth: 1,
+    borderColor: Colors.border,
+  },
+  typeBtnActive: { backgroundColor: Colors.accentLight, borderColor: Colors.accent },
+  typeBtnText: { fontSize: Typography.fontSize.sm, color: Colors.textSecondary, fontWeight: Typography.fontWeight.medium },
+  typeBtnTextActive: { color: Colors.accent, fontWeight: Typography.fontWeight.semibold },
+  textArea: {
+    backgroundColor: Colors.surface,
+    borderRadius: BorderRadius.md,
+    paddingHorizontal: Spacing.md,
+    paddingVertical: 12,
+    fontSize: Typography.fontSize.md,
+    color: Colors.textPrimary,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    minHeight: 90,
+  },
+  disclaimer: {
+    backgroundColor: Colors.surface,
+    borderRadius: BorderRadius.md,
+    padding: Spacing.md,
+    borderWidth: 1,
+    borderColor: Colors.borderLight,
+  },
+  disclaimerText: { fontSize: Typography.fontSize.xs, color: Colors.textTertiary, lineHeight: 18 },
+  primaryButton: {
+    backgroundColor: Colors.accent,
+    borderRadius: BorderRadius.lg,
+    paddingVertical: 16,
+    alignItems: 'center',
+    marginTop: Spacing.xs,
+  },
+  primaryButtonText: { fontSize: Typography.fontSize.lg, fontWeight: Typography.fontWeight.semibold, color: Colors.textInverse },
+  secondaryButton: {
+    borderWidth: 1.5, borderColor: Colors.border, borderRadius: BorderRadius.lg,
+    paddingVertical: 14, alignItems: 'center', marginTop: Spacing.sm,
+  },
   secondaryButtonText: { fontSize: Typography.fontSize.md, fontWeight: Typography.fontWeight.medium, color: Colors.textPrimary },
-  centerContainer: { flex: 1, justifyContent: 'center', alignItems: 'center', padding: Spacing.xl, gap: Spacing.lg },
-  submittingText: { fontSize: Typography.fontSize.md, color: Colors.textSecondary },
+  centerContainer: { flex: 1, justifyContent: 'center', alignItems: 'center', padding: Spacing.xxl, gap: Spacing.md },
+  submittingText: { fontSize: Typography.fontSize.lg, fontWeight: Typography.fontWeight.semibold, color: Colors.textPrimary },
   submittingHint: { fontSize: Typography.fontSize.sm, color: Colors.textTertiary },
-  successContainer: { flex: 1, padding: Spacing.xl, alignItems: 'center', gap: Spacing.md, justifyContent: 'center' },
-  successIcon: { fontSize: 64 },
+  successContainer: { flex: 1, padding: Spacing.xl, justifyContent: 'center', alignItems: 'center' },
+  successIcon: { fontSize: 56, marginBottom: Spacing.sm },
   successTitle: { fontSize: Typography.fontSize.xxl, fontWeight: Typography.fontWeight.bold, color: Colors.textPrimary, textAlign: 'center' },
-  successDesc: { fontSize: Typography.fontSize.md, color: Colors.textSecondary, textAlign: 'center', lineHeight: 22 },
-  successCard: { backgroundColor: Colors.surface, borderRadius: BorderRadius.lg, padding: Spacing.lg, borderWidth: 1, borderColor: Colors.border, alignItems: 'center', gap: Spacing.xs, width: '100%' },
-  successRefLabel: { fontSize: Typography.fontSize.xs, color: Colors.textSecondary, textTransform: 'uppercase', letterSpacing: 0.8 },
+  successDesc: { fontSize: Typography.fontSize.sm, color: Colors.textSecondary, textAlign: 'center', lineHeight: 20, marginTop: 4, marginBottom: Spacing.lg },
+  successCard: {
+    width: '100%',
+    backgroundColor: Colors.surface,
+    borderRadius: BorderRadius.xl,
+    padding: Spacing.lg,
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: Colors.border,
+    marginBottom: Spacing.lg,
+    gap: Spacing.xs,
+  },
+  successRefLabel: { fontSize: Typography.fontSize.xs, color: Colors.textTertiary, textTransform: 'uppercase', letterSpacing: 0.8 },
   successRefId: { fontSize: Typography.fontSize.xxl, fontWeight: Typography.fontWeight.bold, color: Colors.textPrimary, fontFamily: 'monospace' },
-  statusPill: { paddingHorizontal: Spacing.md, paddingVertical: 4, borderRadius: BorderRadius.full },
-  statusPillText: { fontSize: Typography.fontSize.xs, fontWeight: Typography.fontWeight.semibold, textTransform: 'uppercase', letterSpacing: 0.5 },
-  successDate: { fontSize: Typography.fontSize.sm, color: Colors.textTertiary },
-  successNote: { fontSize: Typography.fontSize.sm, color: Colors.textSecondary, textAlign: 'center', lineHeight: 20 },
-  errorIcon: { fontSize: 48 },
-  errorTitle: { fontSize: Typography.fontSize.xl, fontWeight: Typography.fontWeight.bold, color: Colors.textPrimary },
-  errorDesc: { fontSize: Typography.fontSize.md, color: Colors.statusRejected, textAlign: 'center', lineHeight: 22 },
+  statusPill: { paddingHorizontal: 10, paddingVertical: 4, borderRadius: BorderRadius.full, marginTop: 4 },
+  statusPillText: { fontSize: Typography.fontSize.xs, fontWeight: Typography.fontWeight.semibold },
+  successDate: { fontSize: Typography.fontSize.xs, color: Colors.textTertiary, marginTop: 4 },
+  successNote: { fontSize: Typography.fontSize.xs, color: Colors.textTertiary, textAlign: 'center', lineHeight: 18, marginBottom: Spacing.lg },
+  errorIcon: { fontSize: 56, marginBottom: Spacing.sm },
+  errorTitle: { fontSize: Typography.fontSize.xl, fontWeight: Typography.fontWeight.bold, color: Colors.statusRejected },
+  errorDesc: { fontSize: Typography.fontSize.sm, color: Colors.textSecondary, textAlign: 'center', lineHeight: 20, marginBottom: Spacing.lg },
 })

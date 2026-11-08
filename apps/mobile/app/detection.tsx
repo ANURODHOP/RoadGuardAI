@@ -1,9 +1,10 @@
-import React, { useEffect, useState, useRef } from 'react'
+import React, { useEffect, useState, useRef, useCallback } from 'react'
 import {
   View, Text, StyleSheet, TouchableOpacity, SafeAreaView,
-  ScrollView, ActivityIndicator, Image, Dimensions,
+  ScrollView, ActivityIndicator, Image, Dimensions, BackHandler,
 } from 'react-native'
 import { useLocalSearchParams, useRouter } from 'expo-router'
+import { useFocusEffect } from '@react-navigation/native'
 import { runInference } from '../src/lib/inference'
 import { Colors, Typography, Spacing, BorderRadius, getDetectionStateColor } from '../src/lib/theme'
 import type { InferenceResult, BoundingBox } from '../src/lib/inference'
@@ -18,6 +19,18 @@ export default function DetectionScreen() {
   const [result, setResult] = useState<InferenceResult | null>(null)
   const [inferring, setInferring] = useState(true)
   const hasRun = useRef(false)
+
+  // Android Back Handler: return to camera capture
+  useFocusEffect(
+    useCallback(() => {
+      const onBackPress = () => {
+        router.back()
+        return true
+      }
+      const subscription = BackHandler.addEventListener('hardwareBackPress', onBackPress)
+      return () => subscription.remove()
+    }, [router])
+  )
 
   useEffect(() => {
     if (hasRun.current || !params.imageUri) return
@@ -36,31 +49,35 @@ export default function DetectionScreen() {
 
   const stateLabel = (state: string) => {
     switch (state) {
-      case 'pothole_detected': return 'Damage Detected'
-      case 'no_pothole_detected': return 'No Damage Detected'
+      case 'pothole_detected': return 'Road Damage Detected'
+      case 'no_pothole_detected': return 'No Damage Detected by AI'
       case 'uncertain_low_confidence': return 'Uncertain — Low Confidence'
-      case 'model_not_found': return 'Model Not Found'
-      case 'inference_error': return 'Analysis Failed'
-      default: return 'Unknown'
+      case 'model_not_found': return 'AI Model Unavailable'
+      case 'inference_error': return 'Analysis Incomplete'
+      default: return 'Pending Review'
     }
   }
 
   const stateDesc = (state: string) => {
     switch (state) {
-      case 'pothole_detected': return 'The AI model flagged a potential road hazard in this image.'
-      case 'no_pothole_detected': return 'No road damage patterns were detected. You can still submit a report for administrator review.'
-      case 'uncertain_low_confidence': return 'The model found some patterns but confidence is too low to confirm. An administrator will assess the image.'
-      case 'model_not_found': return 'The detection model could not be loaded. Your complaint will be submitted for manual review.'
-      case 'inference_error': return `Analysis encountered an error: ${result?.errorMessage ?? 'Unknown error'}. You can still submit for manual review.`
-      default: return ''
+      case 'pothole_detected':
+        return 'The AI model identified road damage patterns in this photo with high confidence.'
+      case 'no_pothole_detected':
+        return 'No damage patterns were detected by the model. You can still proceed to place the report on the map for manual inspection.'
+      case 'uncertain_low_confidence':
+        return 'The model observed potential irregularities, but confidence is below the threshold. A city inspector will verify your report.'
+      case 'model_not_found':
+        return 'Offline AI model could not be loaded. You can proceed with manual complaint reporting.'
+      case 'inference_error':
+        return `Model analysis encountered an issue: ${result?.errorMessage ?? 'Unknown error'}. You can retry or proceed with manual submission.`
+      default:
+        return 'Proceed to map verification.'
     }
   }
 
-  const canContinue = true // Always allow submitting
-
   const handleContinue = () => {
     router.push({
-      pathname: '/duplicate-check',
+      pathname: '/location-select',
       params: {
         imageUri: params.imageUri,
         lat: params.lat,
@@ -82,15 +99,15 @@ export default function DetectionScreen() {
         >
           <Text style={styles.backText}>← Retake</Text>
         </TouchableOpacity>
-        <Text style={styles.headerTitle}>Analysis Results</Text>
+        <Text style={styles.headerTitle}>AI Road Inspection</Text>
       </View>
 
       <ScrollView showsVerticalScrollIndicator={false}>
         {/* Section: AI Detection Result */}
         <View style={styles.sectionLabel}>
-          <Text style={styles.sectionLabelText}>AI DETECTION RESULT</Text>
+          <Text style={styles.sectionLabelText}>EVIDENCE & DETECTION</Text>
           <Text style={styles.sectionLabelNote}>
-            Model result only — location & admin verification required
+            AI assessment preview — next step confirms location
           </Text>
         </View>
 
@@ -108,12 +125,12 @@ export default function DetectionScreen() {
           {inferring && (
             <View style={styles.inferringOverlay}>
               <ActivityIndicator size="large" color="#fff" />
-              <Text style={styles.inferringText}>Analyzing image...</Text>
+              <Text style={styles.inferringText}>Running YOLO inspection...</Text>
             </View>
           )}
         </View>
 
-        {/* Detection state */}
+        {/* Detection state card */}
         {result && !inferring && (
           <View style={[styles.stateCard, { borderLeftColor: stateColor }]}>
             <View style={styles.stateHeader}>
@@ -130,70 +147,67 @@ export default function DetectionScreen() {
                 <Text style={[styles.confValue, { color: stateColor }]}>
                   {Math.round((result.detections[0]?.confidence ?? 0) * 100)}%
                 </Text>
-                <Text style={styles.confTime}> · {Math.round(result.inferenceMs)}ms</Text>
+                <Text style={styles.confTime}> · {Math.round(result.inferenceMs)}ms inference</Text>
               </View>
             )}
 
-            {result.modelSource === 'coco_fallback' && (
-              <View style={styles.modelNote}>
-                <Text style={styles.modelNoteText}>
-                  ℹ️ Using general-purpose AI model. Pothole-specific model provides better accuracy — see setup docs.
-                </Text>
-              </View>
+            {(result.state === 'inference_error' || result.state === 'model_not_found') && (
+              <TouchableOpacity
+                id="btn-retry-inference"
+                style={styles.retryButton}
+                onPress={runDetection}
+              >
+                <Text style={styles.retryButtonText}>🔄 Retry AI Analysis</Text>
+              </TouchableOpacity>
             )}
           </View>
         )}
 
         {/* Section: Location Evidence */}
         <View style={styles.sectionLabel}>
-          <Text style={styles.sectionLabelText}>LOCATION EVIDENCE</Text>
+          <Text style={styles.sectionLabelText}>LOCATION INFORMATION</Text>
         </View>
+
         <View style={styles.locationCard}>
           {params.lat && params.lon ? (
             <>
               <Text style={styles.locationCoords}>
-                {parseFloat(params.lat).toFixed(5)}, {parseFloat(params.lon).toFixed(5)}
+                📍 {parseFloat(params.lat).toFixed(5)}, {parseFloat(params.lon).toFixed(5)}
               </Text>
-              {params.accuracy ? (
-                <Text style={styles.locationAccuracy}>
-                  GPS accuracy: ±{Math.round(parseFloat(params.accuracy))}m
-                </Text>
-              ) : null}
+              <Text style={styles.locationAccuracy}>
+                GPS Accuracy: ±{Math.round(parseFloat(params.accuracy || '10'))}m
+              </Text>
+              <Text style={styles.locationNote}>
+                You can fine-tune or move the pin on the map in the next step.
+              </Text>
             </>
           ) : (
             <Text style={styles.locationUnavailable}>
-              ⚠️ Location not captured — you can still submit for review
+              ⚠️ Location was not automatically captured. You will pinpoint the damage on the map next.
             </Text>
           )}
         </View>
 
-        {/* Disclaimer */}
-        <View style={styles.disclaimer}>
-          <Text style={styles.disclaimerText}>
-            Detection results are one input. An administrator will independently verify every complaint before any status change.
-          </Text>
-        </View>
-
-        {/* Actions */}
+        {/* Action buttons */}
         <View style={styles.actions}>
           <TouchableOpacity
-            id="btn-check-nearby"
+            id="btn-continue-to-map"
             style={styles.primaryButton}
             onPress={handleContinue}
             disabled={inferring}
           >
-            <Text style={styles.primaryButtonText}>
-              {inferring ? 'Analyzing...' : 'Check Nearby Reports →'}
-            </Text>
+            <Text style={styles.primaryButtonText}>Select / Confirm Location on Map →</Text>
           </TouchableOpacity>
+
           <TouchableOpacity
-            id="btn-retake-from-detection"
+            id="btn-retake-photo-secondary"
             style={styles.secondaryButton}
             onPress={() => router.back()}
           >
             <Text style={styles.secondaryButtonText}>Retake Photo</Text>
           </TouchableOpacity>
         </View>
+
         <View style={{ height: Spacing.xl }} />
       </ScrollView>
     </SafeAreaView>
@@ -247,10 +261,10 @@ const styles = StyleSheet.create({
   },
   image: { width: '100%', height: '100%' },
   inferringOverlay: {
-    ...StyleSheet.absoluteFill, backgroundColor: 'rgba(0,0,0,0.6)',
+    ...StyleSheet.absoluteFill, backgroundColor: 'rgba(0,0,0,0.65)',
     justifyContent: 'center', alignItems: 'center', gap: Spacing.md,
   },
-  inferringText: { color: '#fff', fontSize: Typography.fontSize.md },
+  inferringText: { color: '#fff', fontSize: Typography.fontSize.md, fontWeight: Typography.fontWeight.medium },
   bbox: {
     position: 'absolute', borderWidth: 2.5, borderRadius: 4,
   },
@@ -273,11 +287,21 @@ const styles = StyleSheet.create({
   confLabel: { fontSize: Typography.fontSize.sm, color: Colors.textSecondary },
   confValue: { fontSize: Typography.fontSize.sm, fontWeight: Typography.fontWeight.semibold, marginLeft: 4 },
   confTime: { fontSize: Typography.fontSize.sm, color: Colors.textTertiary },
-  modelNote: {
-    marginTop: Spacing.sm, backgroundColor: Colors.accentLight,
-    borderRadius: BorderRadius.sm, padding: Spacing.sm,
+  retryButton: {
+    marginTop: Spacing.sm,
+    paddingVertical: 8,
+    paddingHorizontal: Spacing.md,
+    borderRadius: BorderRadius.sm,
+    backgroundColor: Colors.surfaceElevated,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    alignSelf: 'flex-start',
   },
-  modelNoteText: { fontSize: Typography.fontSize.xs, color: Colors.accentDark, lineHeight: 18 },
+  retryButtonText: {
+    fontSize: Typography.fontSize.xs,
+    color: Colors.accent,
+    fontWeight: Typography.fontWeight.semibold,
+  },
   locationCard: {
     marginHorizontal: Spacing.lg, marginTop: Spacing.xs,
     backgroundColor: Colors.surface, borderRadius: BorderRadius.md,
@@ -285,14 +309,9 @@ const styles = StyleSheet.create({
   },
   locationCoords: { fontSize: Typography.fontSize.md, fontWeight: Typography.fontWeight.medium, color: Colors.textPrimary, fontFamily: 'monospace' },
   locationAccuracy: { fontSize: Typography.fontSize.sm, color: Colors.textSecondary, marginTop: 4 },
+  locationNote: { fontSize: Typography.fontSize.xs, color: Colors.textTertiary, marginTop: 4 },
   locationUnavailable: { fontSize: Typography.fontSize.sm, color: Colors.statusPending },
-  disclaimer: {
-    marginHorizontal: Spacing.lg, marginTop: Spacing.md,
-    backgroundColor: Colors.surface, borderRadius: BorderRadius.sm,
-    padding: Spacing.md, borderWidth: 1, borderColor: Colors.borderLight,
-  },
-  disclaimerText: { fontSize: Typography.fontSize.xs, color: Colors.textTertiary, textAlign: 'center', lineHeight: 18, fontStyle: 'italic' },
-  actions: { padding: Spacing.lg, gap: Spacing.sm },
+  actions: { padding: Spacing.lg, gap: Spacing.sm, marginTop: Spacing.md },
   primaryButton: {
     backgroundColor: Colors.accent, borderRadius: BorderRadius.lg,
     paddingVertical: 15, alignItems: 'center',

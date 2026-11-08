@@ -10,8 +10,11 @@ import {
   Alert,
   Image,
   RefreshControl,
+  BackHandler,
 } from 'react-native'
+import MapView, { Marker, UrlTile, PROVIDER_DEFAULT } from 'react-native-maps'
 import { useLocalSearchParams, useRouter } from 'expo-router'
+import { useFocusEffect } from '@react-navigation/native'
 import { supabase, getEvidenceUrl } from '../../src/lib/supabase'
 import { Colors, Typography, Spacing, BorderRadius, Shadows, getStatusColor } from '../../src/lib/theme'
 import type { Complaint, ComplaintEvidence } from '../../src/lib/supabase'
@@ -45,6 +48,22 @@ export default function ComplaintDetailScreen() {
   const [loading, setLoading] = useState(true)
   const [refreshing, setRefreshing] = useState(false)
   const [error, setError] = useState('')
+
+  // Android Back Handler: safely return to previous screen
+  useFocusEffect(
+    useCallback(() => {
+      const onBackPress = () => {
+        if (router.canGoBack()) {
+          router.back()
+        } else {
+          router.replace('/(tabs)/reports')
+        }
+        return true
+      }
+      const subscription = BackHandler.addEventListener('hardwareBackPress', onBackPress)
+      return () => subscription.remove()
+    }, [router])
+  )
 
   const loadComplaint = useCallback(async () => {
     if (!id) return
@@ -92,7 +111,7 @@ export default function ComplaintDetailScreen() {
       <SafeAreaView style={styles.container}>
         <View style={styles.loadingContainer}>
           <ActivityIndicator size="large" color={Colors.accent} />
-          <Text style={styles.loadingText}>Loading complaint...</Text>
+          <Text style={styles.loadingText}>Loading complaint data...</Text>
         </View>
       </SafeAreaView>
     )
@@ -120,7 +139,10 @@ export default function ComplaintDetailScreen() {
       <View style={styles.header}>
         <TouchableOpacity
           id="btn-back-complaint-detail"
-          onPress={() => router.back()}
+          onPress={() => {
+            if (router.canGoBack()) router.back()
+            else router.replace('/(tabs)/reports')
+          }}
           style={styles.backButton}
         >
           <Text style={styles.backButtonText}>← Back</Text>
@@ -139,7 +161,7 @@ export default function ComplaintDetailScreen() {
         {/* Evidence photos */}
         {evidence.length > 0 && (
           <View style={styles.section}>
-            <Text style={styles.sectionTitle}>Photos</Text>
+            <Text style={styles.sectionTitle}>Evidence Photos</Text>
             <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.evidenceScroll}>
               {evidence.map((ev) => (
                 <View key={ev.id} style={styles.evidenceItem}>
@@ -152,11 +174,12 @@ export default function ComplaintDetailScreen() {
                   ) : (
                     <View style={[styles.evidenceImage, styles.evidencePlaceholder]}>
                       <Text style={styles.evidencePlaceholderText}>🖼️</Text>
+                      <Text style={styles.evidencePlaceholderSub}>Photo on file</Text>
                     </View>
                   )}
                   <View style={[styles.evidenceTypeBadge, { backgroundColor: Colors.surface }]}>
                     <Text style={styles.evidenceTypeText}>
-                      {ev.evidence_type === 'repair_photo' ? 'After Repair' : 'Report Photo'}
+                      {ev.evidence_type === 'repair_photo' ? 'After Repair' : 'Report Evidence'}
                     </Text>
                   </View>
                 </View>
@@ -165,74 +188,122 @@ export default function ComplaintDetailScreen() {
           </View>
         )}
 
-        {/* Details */}
+        {/* Details Card */}
         <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Details</Text>
+          <Text style={styles.sectionTitle}>Complaint Details</Text>
           <View style={styles.detailCard}>
             <DetailRow label="Damage Type" value={complaint.damage_type?.replace('_', ' ')} />
-            <DetailRow label="Reported" value={new Date(complaint.created_at).toLocaleDateString('en-IN', { year: 'numeric', month: 'long', day: 'numeric' })} />
-            {complaint.address_label && <DetailRow label="Location" value={complaint.address_label} />}
-            <DetailRow label="Coordinates" value={`${complaint.latitude.toFixed(5)}, ${complaint.longitude.toFixed(5)}`} />
+            <DetailRow
+              label="Submission Date"
+              value={new Date(complaint.created_at).toLocaleDateString('en-IN', {
+                year: 'numeric', month: 'long', day: 'numeric', hour: '2-digit', minute: '2-digit'
+              })}
+            />
+            {complaint.address_label && <DetailRow label="Address" value={complaint.address_label} />}
+            <DetailRow label="GPS Coordinates" value={`${complaint.latitude.toFixed(6)}, ${complaint.longitude.toFixed(6)}`} />
             {complaint.location_accuracy_m && (
-              <DetailRow label="GPS Accuracy" value={`±${complaint.location_accuracy_m.toFixed(0)} m`} />
+              <DetailRow label="Location Accuracy" value={`±${complaint.location_accuracy_m.toFixed(0)} meters`} />
             )}
             {complaint.detection_confidence !== null && (
               <View style={styles.detailRow}>
                 <Text style={styles.detailLabel}>AI Detection</Text>
                 <View style={styles.detailValueRow}>
                   <Text style={styles.detailValue}>{Math.round((complaint.detection_confidence ?? 0) * 100)}% confidence</Text>
-                  <Text style={styles.detailNote}>(AI result — administrator verifies)</Text>
+                  <Text style={styles.detailNote}>(AI assessment verified by inspector)</Text>
                 </View>
               </View>
             )}
-            {complaint.description && <DetailRow label="Description" value={complaint.description} />}
+            {complaint.description && <DetailRow label="User Description" value={complaint.description} />}
             {complaint.rejection_reason && (
               <DetailRow label="Rejection Reason" value={complaint.rejection_reason} isWarning />
             )}
             {complaint.resolution_note && (
-              <DetailRow label="Resolution" value={complaint.resolution_note} isPositive />
+              <DetailRow label="Resolution Note" value={complaint.resolution_note} isPositive />
+            )}
+            {complaint.resolved_at && (
+              <DetailRow
+                label="Resolved Date"
+                value={new Date(complaint.resolved_at).toLocaleDateString('en-IN', {
+                  year: 'numeric', month: 'long', day: 'numeric'
+                })}
+                isPositive
+              />
             )}
           </View>
         </View>
 
-        {/* Community Contributions */}
+        {/* Interactive Location Map */}
+        {complaint.latitude && complaint.longitude ? (
+          <View style={styles.section}>
+            <Text style={styles.sectionTitle}>Hazard Location Map</Text>
+            <View style={styles.mapCard}>
+              <MapView
+                style={styles.detailMap}
+                provider={PROVIDER_DEFAULT}
+                initialRegion={{
+                  latitude: complaint.latitude,
+                  longitude: complaint.longitude,
+                  latitudeDelta: 0.005,
+                  longitudeDelta: 0.005,
+                }}
+                scrollEnabled={true}
+                zoomEnabled={true}
+              >
+                <UrlTile urlTemplate="https://tile.openstreetmap.org/{z}/{x}/{y}.png" maximumZ={19} />
+                <Marker
+                  coordinate={{ latitude: complaint.latitude, longitude: complaint.longitude }}
+                  pinColor={statusInfo.text}
+                  title={`Complaint #${shortId}`}
+                  description={complaint.address_label ?? undefined}
+                />
+              </MapView>
+              <View style={styles.mapAttribution}>
+                <Text style={styles.mapAttributionText}>© OpenStreetMap contributors</Text>
+              </View>
+            </View>
+          </View>
+        ) : null}
+
+        {/* Status History Timeline */}
+        {statusHistory.length > 0 && (
+          <View style={styles.section}>
+            <Text style={styles.sectionTitle}>Official Status Timeline</Text>
+            <View style={styles.timelineCard}>
+              {statusHistory.map((item, index) => {
+                const info = getStatusColor(item.new_status)
+                return (
+                  <View key={item.id} style={styles.timelineItem}>
+                    <View style={styles.timelineDot}>
+                      <View style={[styles.timelineDotInner, { backgroundColor: info.text }]} />
+                      {index < statusHistory.length - 1 && <View style={styles.timelineLine} />}
+                    </View>
+                    <View style={styles.timelineContent}>
+                      <Text style={[styles.timelineStatus, { color: info.text }]}>{info.label}</Text>
+                      {item.note && <Text style={styles.timelineNote}>{item.note}</Text>}
+                      <Text style={styles.timelineDate}>
+                        {new Date(item.created_at).toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: 'short' })}
+                      </Text>
+                    </View>
+                  </View>
+                )
+              })}
+            </View>
+          </View>
+        )}
+
+        {/* Community Confirmations */}
         {contributions.length > 0 && (
           <View style={styles.section}>
-            <Text style={styles.sectionTitle}>Community Confirmations</Text>
+            <Text style={styles.sectionTitle}>Community Confirmations ({contributions.length})</Text>
             {contributions.map((c) => (
               <View key={c.id} style={styles.contributionItem}>
                 <Text style={styles.contributionType}>{c.contribution_type.replace('_', ' ')}</Text>
                 {c.description && <Text style={styles.contributionDesc}>{c.description}</Text>}
                 <Text style={styles.contributionDate}>
-                  {new Date(c.created_at).toLocaleDateString()}
+                  {new Date(c.created_at).toLocaleDateString('en-IN')}
                 </Text>
               </View>
             ))}
-          </View>
-        )}
-
-        {/* Status Timeline */}
-        {statusHistory.length > 0 && (
-          <View style={styles.section}>
-            <Text style={styles.sectionTitle}>Status History</Text>
-            {statusHistory.map((item, index) => {
-              const info = getStatusColor(item.new_status)
-              return (
-                <View key={item.id} style={styles.timelineItem}>
-                  <View style={styles.timelineDot}>
-                    <View style={[styles.timelineDotInner, { backgroundColor: info.text }]} />
-                    {index < statusHistory.length - 1 && <View style={styles.timelineLine} />}
-                  </View>
-                  <View style={styles.timelineContent}>
-                    <Text style={styles.timelineStatus}>{info.label}</Text>
-                    {item.note && <Text style={styles.timelineNote}>{item.note}</Text>}
-                    <Text style={styles.timelineDate}>
-                      {new Date(item.created_at).toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: 'short' })}
-                    </Text>
-                  </View>
-                </View>
-              )
-            })}
           </View>
         )}
 
@@ -242,7 +313,7 @@ export default function ComplaintDetailScreen() {
             <View style={styles.duplicateNotice}>
               <Text style={styles.duplicateNoticeTitle}>Linked to existing report</Text>
               <Text style={styles.duplicateNoticeDesc}>
-                This report was linked to report #{complaint.duplicate_of.slice(0, 8).toUpperCase()}
+                This report was linked as a duplicate of report #{complaint.duplicate_of.slice(0, 8).toUpperCase()}
               </Text>
               <TouchableOpacity
                 id="btn-view-original"
@@ -298,14 +369,16 @@ const styles = StyleSheet.create({
   },
   header: {
     paddingHorizontal: Spacing.lg,
-    paddingTop: Spacing.md,
-    paddingBottom: Spacing.md,
+    paddingVertical: Spacing.md,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
     borderBottomWidth: 1,
     borderBottomColor: Colors.border,
-    gap: Spacing.xs,
+    backgroundColor: Colors.background,
   },
   backButton: {
-    marginBottom: Spacing.xs,
+    paddingVertical: 4,
   },
   backButtonText: {
     fontSize: Typography.fontSize.md,
@@ -313,13 +386,12 @@ const styles = StyleSheet.create({
     fontWeight: Typography.fontWeight.medium,
   },
   headerTitle: {
-    fontSize: Typography.fontSize.xl,
+    fontSize: Typography.fontSize.lg,
     fontWeight: Typography.fontWeight.bold,
     color: Colors.textPrimary,
   },
   statusChip: {
-    alignSelf: 'flex-start',
-    paddingHorizontal: 10,
+    paddingHorizontal: 8,
     paddingVertical: 4,
     borderRadius: BorderRadius.full,
   },
@@ -327,193 +399,228 @@ const styles = StyleSheet.create({
     fontSize: Typography.fontSize.xs,
     fontWeight: Typography.fontWeight.semibold,
     textTransform: 'uppercase',
-    letterSpacing: 0.5,
   },
   scrollView: {
     flex: 1,
   },
   section: {
-    padding: Spacing.lg,
-    borderBottomWidth: 1,
-    borderBottomColor: Colors.borderLight,
+    paddingHorizontal: Spacing.lg,
+    paddingTop: Spacing.lg,
   },
   sectionTitle: {
-    fontSize: Typography.fontSize.sm,
+    fontSize: Typography.fontSize.xs,
     fontWeight: Typography.fontWeight.semibold,
     color: Colors.textSecondary,
     textTransform: 'uppercase',
     letterSpacing: 0.8,
-    marginBottom: Spacing.md,
+    marginBottom: Spacing.sm,
   },
   evidenceScroll: {
-    marginHorizontal: -Spacing.lg,
-    paddingHorizontal: Spacing.lg,
+    flexDirection: 'row',
   },
   evidenceItem: {
     marginRight: Spacing.md,
+    borderRadius: BorderRadius.lg,
+    overflow: 'hidden',
     position: 'relative',
-  },
-  evidenceImage: {
-    width: 200,
-    height: 150,
-    borderRadius: BorderRadius.md,
-    backgroundColor: Colors.surface,
-  },
-  evidencePlaceholder: {
-    justifyContent: 'center',
-    alignItems: 'center',
     borderWidth: 1,
     borderColor: Colors.border,
+  },
+  evidenceImage: {
+    width: 220,
+    height: 150,
+  },
+  evidencePlaceholder: {
+    backgroundColor: Colors.surface,
+    justifyContent: 'center',
+    alignItems: 'center',
   },
   evidencePlaceholderText: {
     fontSize: 32,
   },
+  evidencePlaceholderSub: {
+    fontSize: Typography.fontSize.xs,
+    color: Colors.textTertiary,
+    marginTop: 4,
+  },
   evidenceTypeBadge: {
     position: 'absolute',
-    bottom: Spacing.xs,
-    left: Spacing.xs,
+    bottom: 6,
+    left: 6,
     paddingHorizontal: 6,
     paddingVertical: 2,
     borderRadius: BorderRadius.sm,
+    borderWidth: 1,
+    borderColor: Colors.border,
   },
   evidenceTypeText: {
-    fontSize: Typography.fontSize.xs,
+    fontSize: 10,
+    fontWeight: Typography.fontWeight.semibold,
     color: Colors.textSecondary,
-    fontWeight: Typography.fontWeight.medium,
   },
   detailCard: {
     backgroundColor: Colors.surface,
     borderRadius: BorderRadius.lg,
+    padding: Spacing.md,
     borderWidth: 1,
     borderColor: Colors.border,
-    overflow: 'hidden',
+    gap: Spacing.xs,
   },
   detailRow: {
-    padding: Spacing.md,
-    borderBottomWidth: 1,
-    borderBottomColor: Colors.borderLight,
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    paddingVertical: 4,
   },
   detailLabel: {
-    fontSize: Typography.fontSize.xs,
+    fontSize: Typography.fontSize.sm,
     color: Colors.textSecondary,
-    fontWeight: Typography.fontWeight.medium,
-    textTransform: 'uppercase',
-    letterSpacing: 0.5,
-    marginBottom: 2,
+    flex: 1,
   },
   detailValue: {
-    fontSize: Typography.fontSize.md,
+    fontSize: Typography.fontSize.sm,
+    fontWeight: Typography.fontWeight.medium,
     color: Colors.textPrimary,
-    fontWeight: Typography.fontWeight.regular,
+    flex: 2,
+    textAlign: 'right',
   },
   detailValueRow: {
-    flexDirection: 'column',
+    flex: 2,
+    alignItems: 'flex-end',
   },
   detailNote: {
     fontSize: Typography.fontSize.xs,
     color: Colors.textTertiary,
-    marginTop: 2,
-    fontStyle: 'italic',
   },
-  errorContainer: {
-    flex: 1,
-    justifyContent: 'center',
+  mapCard: {
+    height: 180,
+    borderRadius: BorderRadius.lg,
+    overflow: 'hidden',
+    borderWidth: 1,
+    borderColor: Colors.border,
+    position: 'relative',
+  },
+  detailMap: {
+    width: '100%',
+    height: '100%',
+  },
+  mapAttribution: {
+    position: 'absolute',
+    bottom: 4,
+    left: 4,
+    backgroundColor: 'rgba(255, 255, 255, 0.8)',
+    borderRadius: 3,
+    paddingHorizontal: 4,
+    paddingVertical: 1,
+  },
+  mapAttributionText: {
+    fontSize: 9,
+    color: Colors.textSecondary,
+  },
+  timelineCard: {
+    backgroundColor: Colors.surface,
+    borderRadius: BorderRadius.lg,
+    padding: Spacing.md,
+    borderWidth: 1,
+    borderColor: Colors.border,
+  },
+  timelineItem: {
+    flexDirection: 'row',
+    gap: Spacing.md,
+  },
+  timelineDot: {
     alignItems: 'center',
-    padding: Spacing.lg,
+    width: 16,
   },
-  errorText: {
-    fontSize: Typography.fontSize.md,
-    color: Colors.statusRejected,
-    textAlign: 'center',
+  timelineDotInner: {
+    width: 12,
+    height: 12,
+    borderRadius: 6,
+    marginTop: 4,
+  },
+  timelineLine: {
+    width: 2,
+    flex: 1,
+    backgroundColor: Colors.border,
+    marginVertical: 4,
+  },
+  timelineContent: {
+    flex: 1,
+    paddingBottom: Spacing.md,
+  },
+  timelineStatus: {
+    fontSize: Typography.fontSize.sm,
+    fontWeight: Typography.fontWeight.bold,
+  },
+  timelineNote: {
+    fontSize: Typography.fontSize.xs,
+    color: Colors.textSecondary,
+    marginTop: 2,
+    lineHeight: 16,
+  },
+  timelineDate: {
+    fontSize: Typography.fontSize.xs,
+    color: Colors.textTertiary,
+    marginTop: 2,
   },
   contributionItem: {
     backgroundColor: Colors.surface,
     borderRadius: BorderRadius.md,
     padding: Spacing.md,
-    marginBottom: Spacing.sm,
     borderWidth: 1,
     borderColor: Colors.border,
+    marginBottom: Spacing.xs,
+    gap: 2,
   },
   contributionType: {
-    fontSize: Typography.fontSize.sm,
-    fontWeight: Typography.fontWeight.semibold,
-    color: Colors.accent,
-    textTransform: 'capitalize',
-    marginBottom: 4,
+    fontSize: Typography.fontSize.xs,
+    fontWeight: Typography.fontWeight.bold,
+    color: Colors.textSecondary,
+    textTransform: 'uppercase',
   },
   contributionDesc: {
     fontSize: Typography.fontSize.sm,
-    color: Colors.textSecondary,
-    marginBottom: 4,
+    color: Colors.textPrimary,
   },
   contributionDate: {
     fontSize: Typography.fontSize.xs,
     color: Colors.textTertiary,
-  },
-  timelineItem: {
-    flexDirection: 'row',
-    gap: Spacing.md,
-    marginBottom: Spacing.md,
-  },
-  timelineDot: {
-    alignItems: 'center',
-    width: 20,
-  },
-  timelineDotInner: {
-    width: 10,
-    height: 10,
-    borderRadius: 5,
-    marginTop: 4,
-  },
-  timelineLine: {
-    flex: 1,
-    width: 1,
-    backgroundColor: Colors.border,
-    marginTop: 4,
-  },
-  timelineContent: {
-    flex: 1,
-    paddingBottom: Spacing.sm,
-  },
-  timelineStatus: {
-    fontSize: Typography.fontSize.md,
-    fontWeight: Typography.fontWeight.semibold,
-    color: Colors.textPrimary,
-  },
-  timelineNote: {
-    fontSize: Typography.fontSize.sm,
-    color: Colors.textSecondary,
-    marginTop: 2,
-  },
-  timelineDate: {
-    fontSize: Typography.fontSize.xs,
-    color: Colors.textTertiary,
-    marginTop: 4,
   },
   duplicateNotice: {
     backgroundColor: Colors.surface,
     borderRadius: BorderRadius.md,
     padding: Spacing.md,
     borderWidth: 1,
-    borderColor: Colors.statusDuplicate,
+    borderColor: Colors.border,
+    gap: Spacing.xs,
   },
   duplicateNoticeTitle: {
-    fontSize: Typography.fontSize.md,
+    fontSize: Typography.fontSize.sm,
     fontWeight: Typography.fontWeight.semibold,
-    color: Colors.statusDuplicate,
-    marginBottom: 4,
+    color: Colors.textPrimary,
   },
   duplicateNoticeDesc: {
-    fontSize: Typography.fontSize.sm,
+    fontSize: Typography.fontSize.xs,
     color: Colors.textSecondary,
-    marginBottom: Spacing.sm,
   },
   linkButton: {
-    paddingTop: Spacing.xs,
+    marginTop: 4,
   },
   linkButtonText: {
-    fontSize: Typography.fontSize.sm,
+    fontSize: Typography.fontSize.xs,
     color: Colors.accent,
-    fontWeight: Typography.fontWeight.medium,
+    fontWeight: Typography.fontWeight.semibold,
+  },
+  errorContainer: {
+    margin: Spacing.xl,
+    padding: Spacing.lg,
+    backgroundColor: '#FEF2F2',
+    borderRadius: BorderRadius.md,
+    borderWidth: 1,
+    borderColor: '#FECACA',
+    alignItems: 'center',
+  },
+  errorText: {
+    fontSize: Typography.fontSize.md,
+    color: Colors.statusRejected,
   },
 })

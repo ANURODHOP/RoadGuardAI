@@ -1,4 +1,4 @@
-import React from 'react'
+import React, { useCallback } from 'react'
 import {
   View,
   Text,
@@ -7,14 +7,38 @@ import {
   SafeAreaView,
   Image,
   Dimensions,
+  BackHandler,
+  Alert,
 } from 'react-native'
 import { useRouter } from 'expo-router'
+import { useFocusEffect } from '@react-navigation/native'
 import { Colors, Typography, Spacing, BorderRadius } from '../../src/lib/theme'
 
 const { width, height } = Dimensions.get('window')
 
 export default function WelcomeScreen() {
   const router = useRouter()
+
+  // Hardware back press on welcome screen exits application cleanly
+  useFocusEffect(
+    useCallback(() => {
+      const onBackPress = () => {
+        Alert.alert(
+          'Exit RoadGuard',
+          'Do you want to exit the application?',
+          [
+            { text: 'Cancel', style: 'cancel' },
+            { text: 'Exit', style: 'destructive', onPress: () => BackHandler.exitApp() },
+          ],
+          { cancelable: true }
+        )
+        return true
+      }
+
+      const subscription = BackHandler.addEventListener('hardwareBackPress', onBackPress)
+      return () => subscription.remove()
+    }, [])
+  )
 
   return (
     <SafeAreaView style={styles.container}>

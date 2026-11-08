@@ -91,24 +91,15 @@ export async function runInference(imageUri: string): Promise<InferenceResult> {
     try {
       await loadModel()
     } catch (err: any) {
-      console.warn('[Inference] Native ONNX unavailable (Expo Go). Falling back to preview simulation.')
+      console.warn('[Inference] Model load failed:', err?.message)
+      const isMissing = err?.message?.toLowerCase().includes('not found') || err?.message?.toLowerCase().includes('download')
       return {
-        state: 'pothole_detected',
-        detections: [
-          {
-            x1: 0.22,
-            y1: 0.38,
-            x2: 0.78,
-            y2: 0.72,
-            classId: 0,
-            className: 'pothole',
-            confidence: 0.82,
-          },
-        ],
-        inferenceMs: Math.max(120, Date.now() - startMs),
-        modelPath: 'expo-go-preview',
-        errorMessage: err.message,
-        modelSource: 'pothole_finetuned',
+        state: isMissing ? 'model_not_found' : 'inference_error',
+        detections: [],
+        inferenceMs: Date.now() - startMs,
+        modelPath: MODEL_FILENAME,
+        errorMessage: err?.message ?? 'Model runtime unavailable on this build',
+        modelSource: _modelSource,
       }
     }
   }
@@ -118,8 +109,8 @@ export async function runInference(imageUri: string): Promise<InferenceResult> {
       state: 'inference_error',
       detections: [],
       inferenceMs: Date.now() - startMs,
-      modelPath: _modelPath,
-      errorMessage: 'Session is null after load attempt',
+      modelPath: _modelPath || MODEL_FILENAME,
+      errorMessage: 'Inference session could not be established',
       modelSource: _modelSource,
     }
   }

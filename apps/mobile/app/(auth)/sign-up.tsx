@@ -1,4 +1,4 @@
-import React, { useRef, useState } from 'react'
+import React, { useRef, useState, useCallback } from 'react'
 import {
   View,
   Text,
@@ -10,8 +10,10 @@ import {
   Platform,
   ScrollView,
   ActivityIndicator,
+  BackHandler,
 } from 'react-native'
 import { useRouter } from 'expo-router'
+import { useFocusEffect } from '@react-navigation/native'
 import { supabase } from '../../src/lib/supabase'
 import { Colors, Typography, Spacing, BorderRadius } from '../../src/lib/theme'
 
@@ -25,18 +27,25 @@ function validate(
   email: string,
   password: string,
   confirmPassword: string,
+  agreedToTerms: boolean,
 ): string | null {
   if (!displayName.trim()) {
-    return 'Display name is required.'
+    return 'Full name is required.'
+  }
+  if (!email.trim()) {
+    return 'Email address is required.'
   }
   if (!EMAIL_REGEX.test(email.trim())) {
     return 'Please enter a valid email address.'
   }
   if (password.length < 8) {
-    return 'Password must be at least 8 characters.'
+    return 'Password must be at least 8 characters long.'
   }
   if (password !== confirmPassword) {
     return 'Passwords do not match.'
+  }
+  if (!agreedToTerms) {
+    return 'Please agree to the RoadGuard Terms of Service and Privacy Policy to continue.'
   }
   return null
 }
@@ -51,9 +60,24 @@ export default function SignUpScreen() {
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [confirmPassword, setConfirmPassword] = useState('')
+  const [showPassword, setShowPassword] = useState(false)
+  const [showConfirmPassword, setShowConfirmPassword] = useState(false)
+  const [agreedToTerms, setAgreedToTerms] = useState(false)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const [success, setSuccess] = useState(false)
+
+  // Android hardware back handler: navigate to welcome
+  useFocusEffect(
+    useCallback(() => {
+      const onBackPress = () => {
+        router.replace('/(auth)/welcome')
+        return true
+      }
+      const subscription = BackHandler.addEventListener('hardwareBackPress', onBackPress)
+      return () => subscription.remove()
+    }, [router])
+  )
 
   // Refs for sequential focus on keyboard "next"
   const emailRef = useRef<React.ElementRef<typeof TextInput>>(null)
@@ -61,7 +85,7 @@ export default function SignUpScreen() {
   const confirmPasswordRef = useRef<React.ElementRef<typeof TextInput>>(null)
 
   const handleSignUp = async () => {
-    const validationError = validate(displayName, email, password, confirmPassword)
+    const validationError = validate(displayName, email, password, confirmPassword, agreedToTerms)
     if (validationError) {
       setError(validationError)
       return
@@ -70,27 +94,41 @@ export default function SignUpScreen() {
     setError('')
     setLoading(true)
 
-    const { error: authError } = await supabase.auth.signUp({
-      email: email.trim().toLowerCase(),
-      password,
-      options: {
-        data: {
-          display_name: displayName.trim(),
+    try {
+      const { data, error: authError } = await supabase.auth.signUp({
+        email: email.trim().toLowerCase(),
+        password,
+        options: {
+          data: {
+            display_name: displayName.trim(),
+          },
         },
-      },
-    })
+      })
 
-    setLoading(false)
-
-    if (authError) {
-      setError(authError.message)
-    } else {
-      setSuccess(true)
+      if (authError) {
+        if (authError.message.toLowerCase().includes('already registered')) {
+          setError('An account with this email already exists. Please sign in instead.')
+        } else if (authError.message.toLowerCase().includes('invalid')) {
+          setError('Invalid email address format. Please provide a valid email.')
+        } else {
+          setError(authError.message)
+        }
+      } else if (data?.session) {
+        // Email confirmation is disabled on Supabase, user logged in immediately
+        // RootLayout AuthProvider detects session and navigates to (tabs)
+      } else {
+        // Email confirmation is enabled
+        setSuccess(true)
+      }
+    } catch (err: any) {
+      setError(err?.message ?? 'An unexpected error occurred during account creation.')
+    } finally {
+      setLoading(false)
     }
   }
 
   // ---------------------------------------------------------------------------
-  // Success state
+  // Success state (Email Verification required)
   // ---------------------------------------------------------------------------
   if (success) {
     return (
@@ -98,12 +136,13 @@ export default function SignUpScreen() {
         <ScrollView contentContainerStyle={styles.successScroll}>
           <View style={styles.successCard}>
             <Text style={styles.successIcon}>✉️</Text>
-            <Text style={styles.successTitle}>Check your email</Text>
+            <Text style={styles.successTitle}>Verify your email</Text>
             <Text style={styles.successBody}>
-              We sent a confirmation link to{' '}
+              We sent an account activation link to{' '}
               <Text style={styles.successEmail}>{email.trim().toLowerCase()}</Text>.
               {'\n\n'}
-              Click the link in that email to activate your account, then come back to sign in.
+              Please check your email and click the confirmation link to activate your account.
+              Once confirmed, return here to sign in.
             </Text>
             <TouchableOpacity
               id="btn-goto-signin-after-signup"
@@ -136,7 +175,7 @@ export default function SignUpScreen() {
           <TouchableOpacity
             id="btn-back-from-signup"
             style={styles.backButton}
-            onPress={() => router.back()}
+            onPress={() => router.replace('/(auth)/welcome')}
           >
             <Text style={styles.backButtonText}>← Back</Text>
           </TouchableOpacity>
@@ -145,7 +184,7 @@ export default function SignUpScreen() {
           <View style={styles.header}>
             <Text style={styles.title}>Create account</Text>
             <Text style={styles.subtitle}>
-              Join RoadGuard and start reporting road damage in your community
+              Join RoadGuard to report and track road damage in your community
             </Text>
           </View>
 
@@ -154,11 +193,11 @@ export default function SignUpScreen() {
 
             {/* Display Name */}
             <View style={styles.inputGroup}>
-              <Text style={styles.label}>Display name</Text>
+              <Text style={styles.label}>Full Name</Text>
               <TextInput
                 id="input-signup-display-name"
                 style={styles.input}
-                placeholder="Your full name or nickname"
+                placeholder="e.g. John Doe"
                 placeholderTextColor={Colors.textTertiary}
                 value={displayName}
                 onChangeText={(text) => {
@@ -174,7 +213,7 @@ export default function SignUpScreen() {
 
             {/* Email */}
             <View style={styles.inputGroup}>
-              <Text style={styles.label}>Email address</Text>
+              <Text style={styles.label}>Email Address</Text>
               <TextInput
                 id="input-signup-email"
                 ref={emailRef}
@@ -196,43 +235,84 @@ export default function SignUpScreen() {
 
             {/* Password */}
             <View style={styles.inputGroup}>
-              <Text style={styles.label}>Password</Text>
-              <TextInput
-                id="input-signup-password"
-                ref={passwordRef}
-                style={styles.input}
-                placeholder="At least 8 characters"
-                placeholderTextColor={Colors.textTertiary}
-                value={password}
-                onChangeText={(text) => {
-                  setPassword(text)
-                  if (error) setError('')
-                }}
-                secureTextEntry
-                returnKeyType="next"
-                onSubmitEditing={() => confirmPasswordRef.current?.focus()}
-              />
+              <Text style={styles.label}>Password (minimum 8 characters)</Text>
+              <View style={styles.passwordInputContainer}>
+                <TextInput
+                  id="input-signup-password"
+                  ref={passwordRef}
+                  style={styles.passwordInput}
+                  placeholder="At least 8 characters"
+                  placeholderTextColor={Colors.textTertiary}
+                  value={password}
+                  onChangeText={(text) => {
+                    setPassword(text)
+                    if (error) setError('')
+                  }}
+                  secureTextEntry={!showPassword}
+                  returnKeyType="next"
+                  onSubmitEditing={() => confirmPasswordRef.current?.focus()}
+                />
+                <TouchableOpacity
+                  id="btn-toggle-signup-password"
+                  style={styles.visibilityToggle}
+                  onPress={() => setShowPassword(p => !p)}
+                  hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+                >
+                  <Text style={styles.visibilityToggleText}>
+                    {showPassword ? 'Hide' : 'Show'}
+                  </Text>
+                </TouchableOpacity>
+              </View>
             </View>
 
             {/* Confirm Password */}
             <View style={styles.inputGroup}>
-              <Text style={styles.label}>Confirm password</Text>
-              <TextInput
-                id="input-signup-confirm-password"
-                ref={confirmPasswordRef}
-                style={styles.input}
-                placeholder="Re-enter your password"
-                placeholderTextColor={Colors.textTertiary}
-                value={confirmPassword}
-                onChangeText={(text) => {
-                  setConfirmPassword(text)
-                  if (error) setError('')
-                }}
-                secureTextEntry
-                returnKeyType="done"
-                onSubmitEditing={handleSignUp}
-              />
+              <Text style={styles.label}>Confirm Password</Text>
+              <View style={styles.passwordInputContainer}>
+                <TextInput
+                  id="input-signup-confirm-password"
+                  ref={confirmPasswordRef}
+                  style={styles.passwordInput}
+                  placeholder="Re-enter your password"
+                  placeholderTextColor={Colors.textTertiary}
+                  value={confirmPassword}
+                  onChangeText={(text) => {
+                    setConfirmPassword(text)
+                    if (error) setError('')
+                  }}
+                  secureTextEntry={!showConfirmPassword}
+                  returnKeyType="done"
+                  onSubmitEditing={handleSignUp}
+                />
+                <TouchableOpacity
+                  id="btn-toggle-signup-confirm-password"
+                  style={styles.visibilityToggle}
+                  onPress={() => setShowConfirmPassword(p => !p)}
+                  hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+                >
+                  <Text style={styles.visibilityToggleText}>
+                    {showConfirmPassword ? 'Hide' : 'Show'}
+                  </Text>
+                </TouchableOpacity>
+              </View>
             </View>
+
+            {/* Terms and Privacy Acknowledgement */}
+            <TouchableOpacity
+              id="chk-terms"
+              style={styles.termsContainer}
+              onPress={() => setAgreedToTerms(prev => !prev)}
+              activeOpacity={0.8}
+            >
+              <View style={[styles.checkbox, agreedToTerms && styles.checkboxChecked]}>
+                {agreedToTerms && <Text style={styles.checkmark}>✓</Text>}
+              </View>
+              <Text style={styles.termsText}>
+                I acknowledge that reports I submit are public civic data, and I agree to the{' '}
+                <Text style={styles.termsLink}>Terms of Service</Text> and{' '}
+                <Text style={styles.termsLink}>Privacy Policy</Text>.
+              </Text>
+            </TouchableOpacity>
 
             {/* Error banner */}
             {!!error && (
@@ -342,6 +422,68 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: Colors.border,
   },
+  passwordInputContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: Colors.surface,
+    borderRadius: BorderRadius.md,
+    borderWidth: 1,
+    borderColor: Colors.border,
+  },
+  passwordInput: {
+    flex: 1,
+    paddingHorizontal: Spacing.md,
+    paddingVertical: 14,
+    fontSize: Typography.fontSize.md,
+    color: Colors.textPrimary,
+  },
+  visibilityToggle: {
+    paddingHorizontal: Spacing.md,
+    paddingVertical: 14,
+  },
+  visibilityToggleText: {
+    fontSize: Typography.fontSize.sm,
+    fontWeight: Typography.fontWeight.semibold,
+    color: Colors.textSecondary,
+  },
+
+  // ── Terms checkbox ─────────────────────────────────────────────────────────
+  termsContainer: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: Spacing.sm,
+    marginTop: Spacing.xs,
+  },
+  checkbox: {
+    width: 22,
+    height: 22,
+    borderRadius: BorderRadius.sm,
+    borderWidth: 1.5,
+    borderColor: Colors.border,
+    backgroundColor: Colors.surface,
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginTop: 2,
+  },
+  checkboxChecked: {
+    backgroundColor: Colors.accent,
+    borderColor: Colors.accent,
+  },
+  checkmark: {
+    color: Colors.textInverse,
+    fontSize: 14,
+    fontWeight: Typography.fontWeight.bold,
+  },
+  termsText: {
+    flex: 1,
+    fontSize: Typography.fontSize.xs,
+    color: Colors.textSecondary,
+    lineHeight: 18,
+  },
+  termsLink: {
+    color: Colors.accent,
+    fontWeight: Typography.fontWeight.medium,
+  },
 
   // ── Error ──────────────────────────────────────────────────────────────────
   errorContainer: {
@@ -354,6 +496,7 @@ const styles = StyleSheet.create({
   errorText: {
     fontSize: Typography.fontSize.sm,
     color: Colors.statusRejected,
+    lineHeight: 20,
   },
 
   // ── Primary button ─────────────────────────────────────────────────────────

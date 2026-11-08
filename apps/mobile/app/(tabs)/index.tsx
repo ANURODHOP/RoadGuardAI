@@ -8,8 +8,11 @@ import {
   ActivityIndicator,
   RefreshControl,
   SafeAreaView,
+  BackHandler,
+  Alert,
 } from 'react-native'
 import { useRouter } from 'expo-router'
+import { useFocusEffect } from '@react-navigation/native'
 import { supabase, type Complaint, type NearbyComplaint } from '../../src/lib/supabase'
 import {
   Colors,
@@ -282,6 +285,27 @@ export default function HomeScreen() {
     setRefreshing(false)
   }, [fetchProfile, fetchMine, fetchNearby, userLocation])
 
+  // Android hardware back button handling on Homepage
+  useFocusEffect(
+    useCallback(() => {
+      const onBackPress = () => {
+        Alert.alert(
+          'Exit RoadGuard',
+          'Do you want to exit the application?',
+          [
+            { text: 'Cancel', style: 'cancel' },
+            { text: 'Exit', style: 'destructive', onPress: () => BackHandler.exitApp() },
+          ],
+          { cancelable: true }
+        )
+        return true
+      }
+
+      const subscription = BackHandler.addEventListener('hardwareBackPress', onBackPress)
+      return () => subscription.remove()
+    }, [])
+  )
+
   const greeting = displayName ? `Hello, ${displayName.split(' ')[0]} 👋` : 'Hello there 👋'
 
   return (
@@ -301,8 +325,19 @@ export default function HomeScreen() {
       >
         {/* ── Header ── */}
         <View style={styles.header}>
-          <Text style={styles.headerTitle}>RoadGuard</Text>
-          <Text style={styles.headerGreeting}>{greeting}</Text>
+          <View style={styles.headerTextContainer}>
+            <Text style={styles.headerTitle}>RoadGuard</Text>
+            <Text style={styles.headerGreeting}>{greeting}</Text>
+          </View>
+          <TouchableOpacity
+            id="btn-header-profile"
+            style={styles.profileButton}
+            onPress={() => router.push('/(tabs)/profile')}
+          >
+            <Text style={styles.profileButtonText}>
+              {displayName ? displayName.charAt(0).toUpperCase() : '👤'}
+            </Text>
+          </TouchableOpacity>
         </View>
 
         {/* ── Summary Row ── */}
@@ -320,8 +355,33 @@ export default function HomeScreen() {
           onPress={() => router.push('/capture')}
         >
           <Text style={styles.reportButtonIcon}>📸</Text>
-          <Text style={styles.reportButtonText}>Report a Pothole</Text>
+          <Text style={styles.reportButtonText}>Report Road Damage</Text>
         </TouchableOpacity>
+
+        {/* ── Quick Actions ── */}
+        <View style={styles.quickActionsRow}>
+          <TouchableOpacity
+            id="btn-quick-reports"
+            style={styles.quickActionCard}
+            onPress={() => router.push('/(tabs)/reports')}
+            activeOpacity={0.75}
+          >
+            <Text style={styles.quickActionIcon}>📋</Text>
+            <Text style={styles.quickActionTitle}>My Complaints</Text>
+            <Text style={styles.quickActionSub}>{totalCount} submitted</Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            id="btn-quick-map"
+            style={styles.quickActionCard}
+            onPress={() => router.push('/(tabs)/map')}
+            activeOpacity={0.75}
+          >
+            <Text style={styles.quickActionIcon}>🗺️</Text>
+            <Text style={styles.quickActionTitle}>Nearby Map</Text>
+            <Text style={styles.quickActionSub}>Explore hazards</Text>
+          </TouchableOpacity>
+        </View>
 
         {/* ── Nearby Reports ── */}
         <View style={styles.section}>
@@ -382,8 +442,14 @@ const styles = StyleSheet.create({
 
   // Header
   header: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
     paddingTop: Spacing.lg,
     paddingBottom: Spacing.md,
+  },
+  headerTextContainer: {
+    flex: 1,
   },
   headerTitle: {
     fontSize: Typography.fontSize.xxl,
@@ -395,6 +461,21 @@ const styles = StyleSheet.create({
     fontSize: Typography.fontSize.md,
     color: Colors.textSecondary,
     marginTop: 2,
+  },
+  profileButton: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: Colors.accentLight,
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: Colors.border,
+  },
+  profileButtonText: {
+    fontSize: Typography.fontSize.md,
+    fontWeight: Typography.fontWeight.bold,
+    color: Colors.accent,
   },
 
   // Summary row
@@ -433,7 +514,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    marginBottom: Spacing.lg,
+    marginBottom: Spacing.md,
     gap: Spacing.sm,
   },
   reportButtonIcon: {
@@ -444,6 +525,35 @@ const styles = StyleSheet.create({
     fontWeight: Typography.fontWeight.semibold,
     color: Colors.textInverse,
     letterSpacing: 0.2,
+  },
+
+  // Quick actions
+  quickActionsRow: {
+    flexDirection: 'row',
+    gap: Spacing.sm,
+    marginBottom: Spacing.lg,
+  },
+  quickActionCard: {
+    flex: 1,
+    backgroundColor: Colors.surface,
+    borderRadius: BorderRadius.md,
+    padding: Spacing.md,
+    borderWidth: 1,
+    borderColor: Colors.border,
+  },
+  quickActionIcon: {
+    fontSize: 24,
+    marginBottom: Spacing.xs,
+  },
+  quickActionTitle: {
+    fontSize: Typography.fontSize.sm,
+    fontWeight: Typography.fontWeight.semibold,
+    color: Colors.textPrimary,
+  },
+  quickActionSub: {
+    fontSize: Typography.fontSize.xs,
+    color: Colors.textTertiary,
+    marginTop: 2,
   },
 
   // Sections

@@ -1,9 +1,10 @@
 import React, { useEffect, useState, useCallback, useRef } from 'react'
 import {
   View, Text, StyleSheet, FlatList, TouchableOpacity,
-  SafeAreaView, ActivityIndicator, RefreshControl,
+  SafeAreaView, ActivityIndicator, RefreshControl, TextInput, BackHandler,
 } from 'react-native'
 import { useRouter } from 'expo-router'
+import { useFocusEffect } from '@react-navigation/native'
 import { supabase, fetchMyComplaintsPage } from '../../src/lib/supabase'
 import { Colors, Typography, Spacing, BorderRadius, getStatusColor } from '../../src/lib/theme'
 import type { Complaint, ComplaintStatus } from '../../src/lib/supabase'
@@ -31,13 +32,27 @@ export default function ReportsScreen() {
   const router = useRouter()
   const [complaints, setComplaints] = useState<Complaint[]>([])
   const [activeFilter, setActiveFilter] = useState<ComplaintStatus | 'all'>('all')
+  const [searchQuery, setSearchQuery] = useState('')
   const [loading, setLoading] = useState(true)
   const [loadingMore, setLoadingMore] = useState(false)
   const [refreshing, setRefreshing] = useState(false)
   const [totalCount, setTotalCount] = useState(0)
   const [currentPage, setCurrentPage] = useState(1)
   const [hasMore, setHasMore] = useState(false)
+  const [errorMessage, setErrorMessage] = useState('')
   const isLoadingMoreRef = useRef(false)
+
+  // Android Back Handler: return to Home tab
+  useFocusEffect(
+    useCallback(() => {
+      const onBackPress = () => {
+        router.replace('/(tabs)/')
+        return true
+      }
+      const subscription = BackHandler.addEventListener('hardwareBackPress', onBackPress)
+      return () => subscription.remove()
+    }, [router])
+  )
 
   // ── Load first page ───────────────────────────────────────────────────────
   const loadComplaints = useCallback(async (
@@ -48,6 +63,7 @@ export default function ReportsScreen() {
     if (page === 1) {
       setLoading(true)
     }
+    setErrorMessage('')
 
     try {
       const result = await fetchMyComplaintsPage(
@@ -60,8 +76,9 @@ export default function ReportsScreen() {
       setTotalCount(result.totalCount)
       setHasMore(result.hasMore)
       setCurrentPage(page)
-    } catch (err) {
+    } catch (err: any) {
       console.warn('[Reports] loadComplaints error:', err)
+      setErrorMessage(err?.message ?? 'Failed to load complaints')
     } finally {
       setLoading(false)
       setLoadingMore(false)
@@ -140,6 +157,17 @@ export default function ReportsScreen() {
     )
   }
 
+  const filteredComplaints = complaints.filter(c => {
+    if (!searchQuery.trim()) return true
+    const q = searchQuery.toLowerCase().trim()
+    return (
+      c.id.toLowerCase().includes(q) ||
+      (c.address_label && c.address_label.toLowerCase().includes(q)) ||
+      c.damage_type.toLowerCase().includes(q) ||
+      c.complaint_status.toLowerCase().includes(q)
+    )
+  })
+
   return (
     <SafeAreaView style={styles.container}>
       <View style={styles.header}>
@@ -147,6 +175,20 @@ export default function ReportsScreen() {
         <Text style={styles.subtitle}>
           {totalCount} total report{totalCount !== 1 ? 's' : ''}
         </Text>
+      </View>
+
+      {/* Search Input */}
+      <View style={styles.searchContainer}>
+        <TextInput
+          id="input-reports-search"
+          style={styles.searchInput}
+          placeholder="Search by ID, location, or damage type..."
+          placeholderTextColor={Colors.textTertiary}
+          value={searchQuery}
+          onChangeText={setSearchQuery}
+          clearButtonMode="while-editing"
+          autoCapitalize="none"
+        />
       </View>
 
       {/* Status filter bar */}
@@ -165,16 +207,23 @@ export default function ReportsScreen() {
         ))}
       </View>
 
-      {loading ? (
+      {errorMessage ? (
+        <View style={styles.errorContainer}>
+          <Text style={styles.errorText}>⚠️ {errorMessage}</Text>
+          <TouchableOpacity style={styles.retryButton} onPress={handleRefresh}>
+            <Text style={styles.retryButtonText}>Retry</Text>
+          </TouchableOpacity>
+        </View>
+      ) : loading ? (
         <View style={styles.loadingContainer}>
           <ActivityIndicator size="large" color={Colors.accent} />
         </View>
       ) : (
         <FlatList
-          data={complaints}
+          data={filteredComplaints}
           keyExtractor={item => item.id}
           renderItem={renderItem}
-          contentContainerStyle={complaints.length === 0 ? styles.emptyContainer : styles.listContent}
+          contentContainerStyle={filteredComplaints.length === 0 ? styles.emptyContainer : styles.listContent}
           refreshControl={
             <RefreshControl
               refreshing={refreshing}
@@ -190,19 +239,23 @@ export default function ReportsScreen() {
           ListEmptyComponent={
             <View style={styles.emptyState}>
               <Text style={styles.emptyIcon}>📋</Text>
-              <Text style={styles.emptyTitle}>No reports yet</Text>
+              <Text style={styles.emptyTitle}>
+                {searchQuery ? 'No matching reports' : 'No reports yet'}
+              </Text>
               <Text style={styles.emptyDesc}>
-                {activeFilter === 'all'
+                {searchQuery
+                  ? `No reports matched "${searchQuery}".`
+                  : activeFilter === 'all'
                   ? "You haven't submitted any road damage reports yet."
                   : `No reports with status "${getStatusColor(activeFilter as string).label}".`}
               </Text>
-              {activeFilter === 'all' && (
+              {activeFilter === 'all' && !searchQuery && (
                 <TouchableOpacity
-                  id="btn-report-from-empty"
+                  id="btn-report-first"
                   style={styles.emptyButton}
                   onPress={() => router.push('/capture')}
                 >
-                  <Text style={styles.emptyButtonText}>Report Damage</Text>
+                  <Text style={styles.emptyButtonText}>Report Road Damage</Text>
                 </TouchableOpacity>
               )}
             </View>
@@ -221,6 +274,47 @@ const styles = StyleSheet.create({
   },
   title: { fontSize: Typography.fontSize.xl, fontWeight: Typography.fontWeight.bold, color: Colors.textPrimary },
   subtitle: { fontSize: Typography.fontSize.sm, color: Colors.textSecondary, marginTop: 2 },
+  searchContainer: {
+    paddingHorizontal: Spacing.lg,
+    paddingTop: Spacing.sm,
+    paddingBottom: Spacing.xs,
+  },
+  searchInput: {
+    backgroundColor: Colors.surface,
+    borderRadius: BorderRadius.md,
+    paddingHorizontal: Spacing.md,
+    paddingVertical: 10,
+    fontSize: Typography.fontSize.sm,
+    color: Colors.textPrimary,
+    borderWidth: 1,
+    borderColor: Colors.border,
+  },
+  errorContainer: {
+    margin: Spacing.lg,
+    padding: Spacing.md,
+    backgroundColor: '#FEF2F2',
+    borderRadius: BorderRadius.md,
+    borderWidth: 1,
+    borderColor: '#FECACA',
+    alignItems: 'center',
+    gap: Spacing.sm,
+  },
+  errorText: {
+    fontSize: Typography.fontSize.sm,
+    color: Colors.statusRejected,
+    textAlign: 'center',
+  },
+  retryButton: {
+    backgroundColor: Colors.accent,
+    paddingHorizontal: Spacing.md,
+    paddingVertical: 6,
+    borderRadius: BorderRadius.sm,
+  },
+  retryButtonText: {
+    color: '#fff',
+    fontSize: Typography.fontSize.xs,
+    fontWeight: Typography.fontWeight.semibold,
+  },
   filterBar: {
     flexDirection: 'row', paddingHorizontal: Spacing.lg, paddingVertical: Spacing.sm,
     gap: Spacing.xs, borderBottomWidth: 1, borderBottomColor: Colors.border,

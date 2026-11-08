@@ -7,6 +7,14 @@
     "apps/mobile",
     "apps/admin"
   ],
+  "overrides": {
+    "react": "19.3.0",
+    "react-native-worklets": "0.13.0"
+  },
+  "dependencies": {
+    "react": "19.3.0",
+    "react-native-worklets": "0.13.0"
+  },
   "scripts": {
     "mobile": "npm --prefix apps/mobile start",
     "mobile:android": "npm --prefix apps/mobile run android",

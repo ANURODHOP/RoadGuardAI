@@ -1,10 +1,9 @@
 import { Stack } from 'expo-router'
 import { StatusBar } from 'expo-status-bar'
-import { useEffect } from 'react'
+import { useEffect, useState } from 'react'
 import { GestureHandlerRootView } from 'react-native-gesture-handler'
 import { supabase } from '../src/lib/supabase'
 import { useRouter, useSegments } from 'expo-router'
-import { useState } from 'react'
 import { View, ActivityIndicator } from 'react-native'
 import { Colors } from '../src/lib/theme'
 import type { Session } from '@supabase/supabase-js'
@@ -60,6 +59,7 @@ export default function RootLayout() {
           <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
           <Stack.Screen name="capture" options={{ presentation: 'fullScreenModal', headerShown: false }} />
           <Stack.Screen name="detection" options={{ presentation: 'card', headerShown: false }} />
+          <Stack.Screen name="location-select" options={{ presentation: 'card', headerShown: false }} />
           <Stack.Screen name="duplicate-check" options={{ presentation: 'card', headerShown: false }} />
           <Stack.Screen name="submit-complaint" options={{ presentation: 'card', headerShown: false }} />
           <Stack.Screen name="complaint/[id]" options={{ presentation: 'card', headerShown: false }} />

@@ -1,13 +1,14 @@
-import React, { useState, useRef, useEffect } from 'react'
+import React, { useState, useRef, useEffect, useCallback } from 'react'
 import {
   View, Text, StyleSheet, TouchableOpacity, SafeAreaView,
-  Alert, ActivityIndicator, Image, Dimensions,
+  Alert, ActivityIndicator, Image, Dimensions, BackHandler, Linking,
 } from 'react-native'
 import { CameraView, CameraType, useCameraPermissions } from 'expo-camera'
 import * as ImagePicker from 'expo-image-picker'
 import * as Location from 'expo-location'
 import { manipulateAsync, SaveFormat } from 'expo-image-manipulator'
 import { useRouter } from 'expo-router'
+import { useFocusEffect } from '@react-navigation/native'
 import { Colors, Typography, Spacing, BorderRadius } from '../src/lib/theme'
 
 const { width } = Dimensions.get('window')
@@ -25,24 +26,68 @@ export default function CaptureScreen() {
   const [location, setLocation] = useState<{ lat: number; lon: number; accuracy: number | null } | null>(null)
   const [processing, setProcessing] = useState(false)
 
+  // Android hardware back handler:
+  // If previewing image -> cancel preview and return to viewfinder
+  // If in camera/gallery mode -> return to main tabs
+  useFocusEffect(
+    useCallback(() => {
+      const onBackPress = () => {
+        if (capturedUri) {
+          setCapturedUri(null)
+          setGpsStatus('idle')
+          setLocation(null)
+          return true
+        }
+        router.replace('/(tabs)/')
+        return true
+      }
+      const subscription = BackHandler.addEventListener('hardwareBackPress', onBackPress)
+      return () => subscription.remove()
+    }, [capturedUri, router])
+  )
+
   useEffect(() => {
-    if (!cameraPermission?.granted) requestCameraPermission()
-    Location.requestForegroundPermissionsAsync()
+    if (!cameraPermission?.granted) {
+      requestCameraPermission()
+    }
+    initLocation()
   }, [])
+
+  const initLocation = async () => {
+    try {
+      const hasServices = await Location.hasServicesEnabledAsync()
+      if (!hasServices) {
+        setGpsStatus('unavailable')
+        return
+      }
+      const { status } = await Location.requestForegroundPermissionsAsync()
+      if (status === 'granted') {
+        captureGPS()
+      } else {
+        setGpsStatus('unavailable')
+      }
+    } catch {
+      setGpsStatus('unavailable')
+    }
+  }
 
   const captureGPS = async () => {
     setGpsStatus('locating')
-    const { status } = await Location.requestForegroundPermissionsAsync()
-    if (status !== 'granted') {
-      setGpsStatus('unavailable')
-      return
-    }
     try {
+      const { status } = await Location.requestForegroundPermissionsAsync()
+      if (status !== 'granted') {
+        setGpsStatus('unavailable')
+        return
+      }
       const loc = await Location.getCurrentPositionAsync({
-        accuracy: Location.Accuracy.High,
-        timeInterval: 5000,
+        accuracy: Location.Accuracy.Balanced,
+        timeInterval: 6000,
       })
-      setLocation({ lat: loc.coords.latitude, lon: loc.coords.longitude, accuracy: loc.coords.accuracy })
+      setLocation({
+        lat: loc.coords.latitude,
+        lon: loc.coords.longitude,
+        accuracy: loc.coords.accuracy,
+      })
       setGpsStatus('found')
     } catch {
       setGpsStatus('unavailable')
@@ -50,7 +95,7 @@ export default function CaptureScreen() {
   }
 
   const processImage = async (uri: string): Promise<string> => {
-    // Resize to max 1024px, fix orientation, compress
+    // Resize to max 1024px, fix orientation, compress to JPEG
     const result = await manipulateAsync(
       uri,
       [{ resize: { width: 1024 } }],
@@ -60,38 +105,60 @@ export default function CaptureScreen() {
   }
 
   const takePicture = async () => {
-    if (!cameraRef.current) return
+    if (!cameraRef.current || processing) return
     setProcessing(true)
     try {
-      const photo = await cameraRef.current.takePictureAsync({ quality: 0.85, exif: false })
+      const photo = await cameraRef.current.takePictureAsync({
+        quality: 0.85,
+        exif: false,
+      })
       if (photo?.uri) {
         const processed = await processImage(photo.uri)
         setCapturedUri(processed)
-        captureGPS()
+        if (gpsStatus !== 'found') {
+          captureGPS()
+        }
       }
-    } catch (e) {
-      Alert.alert('Error', 'Failed to take picture. Please try again.')
+    } catch (e: any) {
+      Alert.alert('Camera Error', 'Could not capture photo. Please try again.')
+    } finally {
+      setProcessing(false)
     }
-    setProcessing(false)
   }
 
   const pickFromGallery = async () => {
-    const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync()
-    if (status !== 'granted') {
-      Alert.alert('Permission required', 'Please allow photo library access in Settings to select images.')
-      return
-    }
-    const result = await ImagePicker.launchImageLibraryAsync({
-      mediaTypes: ImagePicker.MediaTypeOptions.Images,
-      allowsEditing: false,
-      quality: 0.85,
-    })
-    if (!result.canceled && result.assets[0]) {
-      setProcessing(true)
-      const processed = await processImage(result.assets[0].uri)
-      setCapturedUri(processed)
+    try {
+      const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync()
+      if (status !== 'granted') {
+        Alert.alert(
+          'Photo Library Access Required',
+          'Please allow photo library access in Settings to select images.',
+          [
+            { text: 'Cancel', style: 'cancel' },
+            { text: 'Open Settings', onPress: () => Linking.openSettings() },
+          ]
+        )
+        return
+      }
+
+      const result = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ImagePicker.MediaTypeOptions.Images,
+        allowsEditing: false,
+        quality: 0.85,
+      })
+
+      if (!result.canceled && result.assets[0]?.uri) {
+        setProcessing(true)
+        const processed = await processImage(result.assets[0].uri)
+        setCapturedUri(processed)
+        if (gpsStatus !== 'found') {
+          captureGPS()
+        }
+      }
+    } catch (err: any) {
+      Alert.alert('Gallery Error', 'Failed to pick image from gallery.')
+    } finally {
       setProcessing(false)
-      captureGPS()
     }
   }
 
@@ -110,10 +177,10 @@ export default function CaptureScreen() {
 
   const gpsLabel = () => {
     switch (gpsStatus) {
-      case 'locating': return '📡 Getting location...'
-      case 'found': return `✅ GPS ±${Math.round(location?.accuracy ?? 0)}m`
-      case 'unavailable': return '⚠️ Location unavailable — you can continue'
-      default: return '📍 Location will be captured after photo'
+      case 'locating': return '📡 Obtaining GPS location...'
+      case 'found': return `✅ GPS Verified (±${Math.round(location?.accuracy ?? 0)}m)`
+      case 'unavailable': return '⚠️ Location unavailable (Manual map selection on next step)'
+      default: return '📍 Location capturing...'
     }
   }
 
@@ -124,7 +191,6 @@ export default function CaptureScreen() {
         <View style={styles.previewContainer}>
           <Image source={{ uri: capturedUri }} style={styles.previewImage} resizeMode="cover" />
           <View style={styles.previewOverlay}>
-            {/* GPS status pill */}
             <View style={styles.gpsPill}>
               <Text style={styles.gpsPillText}>{gpsLabel()}</Text>
             </View>
@@ -135,16 +201,20 @@ export default function CaptureScreen() {
           <TouchableOpacity
             id="btn-retake"
             style={styles.secondaryButton}
-            onPress={() => { setCapturedUri(null); setGpsStatus('idle'); setLocation(null) }}
+            onPress={() => {
+              setCapturedUri(null)
+              setGpsStatus('idle')
+              setLocation(null)
+            }}
           >
-            <Text style={styles.secondaryButtonText}>Retake</Text>
+            <Text style={styles.secondaryButtonText}>Retake Photo</Text>
           </TouchableOpacity>
           <TouchableOpacity
             id="btn-use-photo"
             style={styles.primaryButton}
             onPress={handleContinue}
           >
-            <Text style={styles.primaryButtonText}>Use This Photo →</Text>
+            <Text style={styles.primaryButtonText}>Analyze Road Damage →</Text>
           </TouchableOpacity>
         </View>
       </SafeAreaView>
@@ -154,7 +224,7 @@ export default function CaptureScreen() {
   // ── Camera mode ────────────────────────────────────────────
   return (
     <SafeAreaView style={styles.container}>
-      {/* Mode toggle */}
+      {/* Top mode bar */}
       <View style={styles.modeToggle}>
         <TouchableOpacity
           id="btn-camera-toggle"
@@ -170,7 +240,11 @@ export default function CaptureScreen() {
         >
           <Text style={[styles.modeBtnText, mode === 'gallery' && styles.modeBtnTextActive]}>Gallery</Text>
         </TouchableOpacity>
-        <TouchableOpacity style={styles.closeBtn} onPress={() => router.back()}>
+        <TouchableOpacity
+          id="btn-close-capture"
+          style={styles.closeBtn}
+          onPress={() => router.replace('/(tabs)/')}
+        >
           <Text style={styles.closeBtnText}>✕</Text>
         </TouchableOpacity>
       </View>
@@ -182,7 +256,7 @@ export default function CaptureScreen() {
               {/* Guideline overlay */}
               <View style={styles.cameraGuide}>
                 <View style={styles.guideFrame} />
-                <Text style={styles.guideText}>Frame the road damage clearly</Text>
+                <Text style={styles.guideText}>Center the pothole or road damage</Text>
               </View>
 
               {/* Shutter controls */}
@@ -190,21 +264,31 @@ export default function CaptureScreen() {
                 <TouchableOpacity
                   style={styles.flipBtn}
                   onPress={() => setFacing(f => f === 'back' ? 'front' : 'back')}
+                  hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
                 >
                   <Text style={styles.flipBtnText}>🔄</Text>
                 </TouchableOpacity>
+
                 <TouchableOpacity
                   id="btn-shutter"
                   style={styles.shutterBtn}
                   onPress={takePicture}
                   disabled={processing}
                 >
-                  {processing
-                    ? <ActivityIndicator color="#fff" />
-                    : <View style={styles.shutterInner} />
-                  }
+                  {processing ? (
+                    <ActivityIndicator color="#fff" />
+                  ) : (
+                    <View style={styles.shutterInner} />
+                  )}
                 </TouchableOpacity>
-                <View style={{ width: 48 }} />
+
+                <TouchableOpacity
+                  style={styles.galleryShortcutBtn}
+                  onPress={pickFromGallery}
+                  hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+                >
+                  <Text style={styles.flipBtnText}>🖼️</Text>
+                </TouchableOpacity>
               </View>
             </CameraView>
           ) : (
@@ -212,17 +296,47 @@ export default function CaptureScreen() {
               <Text style={styles.permissionIcon}>📷</Text>
               <Text style={styles.permissionTitle}>Camera Access Required</Text>
               <Text style={styles.permissionDesc}>
-                RoadGuard needs camera access to photograph road damage.
+                RoadGuard needs camera permissions to photograph potholes and road damage.
               </Text>
-              <TouchableOpacity style={styles.primaryButton} onPress={requestCameraPermission}>
-                <Text style={styles.primaryButtonText}>Allow Camera</Text>
+              <TouchableOpacity
+                id="btn-grant-camera-permission"
+                style={styles.primaryButton}
+                onPress={requestCameraPermission}
+              >
+                <Text style={styles.primaryButtonText}>Grant Camera Permission</Text>
               </TouchableOpacity>
-              <TouchableOpacity style={styles.linkBtn} onPress={() => { setMode('gallery'); pickFromGallery() }}>
-                <Text style={styles.linkBtnText}>Choose from gallery instead</Text>
+              <TouchableOpacity
+                style={styles.settingsButton}
+                onPress={() => Linking.openSettings()}
+              >
+                <Text style={styles.settingsButtonText}>Open Device Settings</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                id="btn-choose-gallery-fallback"
+                style={styles.linkBtn}
+                onPress={pickFromGallery}
+              >
+                <Text style={styles.linkBtnText}>Choose from photo gallery instead</Text>
               </TouchableOpacity>
             </View>
           )}
         </>
+      )}
+
+      {mode === 'gallery' && (
+        <View style={styles.permissionContainer}>
+          <Text style={styles.permissionIcon}>🖼️</Text>
+          <Text style={styles.permissionTitle}>Gallery Selection</Text>
+          <Text style={styles.permissionDesc}>
+            Select a photo of the road damage from your device's photo library.
+          </Text>
+          <TouchableOpacity style={styles.primaryButton} onPress={pickFromGallery}>
+            <Text style={styles.primaryButtonText}>Open Photo Library</Text>
+          </TouchableOpacity>
+          <TouchableOpacity style={styles.linkBtn} onPress={() => setMode('camera')}>
+            <Text style={styles.linkBtnText}>Switch back to Camera</Text>
+          </TouchableOpacity>
+        </View>
       )}
     </SafeAreaView>
   )
@@ -244,22 +358,23 @@ const styles = StyleSheet.create({
   camera: { flex: 1 },
   cameraGuide: { flex: 1, justifyContent: 'center', alignItems: 'center', gap: Spacing.md },
   guideFrame: {
-    width: width * 0.7, height: width * 0.7 * 0.75,
-    borderWidth: 2, borderColor: 'rgba(255,255,255,0.6)',
+    width: width * 0.75, height: width * 0.75 * 0.75,
+    borderWidth: 2, borderColor: 'rgba(255,255,255,0.7)',
     borderRadius: BorderRadius.lg,
   },
-  guideText: { color: 'rgba(255,255,255,0.8)', fontSize: Typography.fontSize.sm },
+  guideText: { color: 'rgba(255,255,255,0.9)', fontSize: Typography.fontSize.sm, fontWeight: Typography.fontWeight.medium },
   shutterRow: {
     flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
     paddingHorizontal: Spacing.xl, paddingBottom: Spacing.xl,
   },
   shutterBtn: {
-    width: 72, height: 72, borderRadius: 36,
-    backgroundColor: 'rgba(255,255,255,0.2)', borderWidth: 3, borderColor: '#fff',
+    width: 76, height: 76, borderRadius: 38,
+    backgroundColor: 'rgba(255,255,255,0.25)', borderWidth: 3, borderColor: '#fff',
     justifyContent: 'center', alignItems: 'center',
   },
-  shutterInner: { width: 56, height: 56, borderRadius: 28, backgroundColor: '#fff' },
-  flipBtn: { width: 48, height: 48, borderRadius: 24, backgroundColor: 'rgba(255,255,255,0.15)', justifyContent: 'center', alignItems: 'center' },
+  shutterInner: { width: 60, height: 60, borderRadius: 30, backgroundColor: '#fff' },
+  flipBtn: { width: 48, height: 48, borderRadius: 24, backgroundColor: 'rgba(255,255,255,0.2)', justifyContent: 'center', alignItems: 'center' },
+  galleryShortcutBtn: { width: 48, height: 48, borderRadius: 24, backgroundColor: 'rgba(255,255,255,0.2)', justifyContent: 'center', alignItems: 'center' },
   flipBtnText: { fontSize: 20 },
   permissionContainer: { flex: 1, justifyContent: 'center', alignItems: 'center', padding: Spacing.xl, gap: Spacing.md, backgroundColor: Colors.background },
   permissionIcon: { fontSize: 64 },
@@ -267,13 +382,19 @@ const styles = StyleSheet.create({
   permissionDesc: { fontSize: Typography.fontSize.md, color: Colors.textSecondary, textAlign: 'center', lineHeight: 22 },
   primaryButton: { backgroundColor: Colors.accent, borderRadius: BorderRadius.lg, paddingVertical: 14, paddingHorizontal: Spacing.xl, alignItems: 'center', width: '100%' },
   primaryButtonText: { fontSize: Typography.fontSize.md, fontWeight: Typography.fontWeight.semibold, color: '#fff' },
+  settingsButton: {
+    borderWidth: 1, borderColor: Colors.border,
+    borderRadius: BorderRadius.lg, paddingVertical: 12, paddingHorizontal: Spacing.xl,
+    alignItems: 'center', width: '100%',
+  },
+  settingsButtonText: { fontSize: Typography.fontSize.sm, fontWeight: Typography.fontWeight.medium, color: Colors.textPrimary },
   linkBtn: { paddingVertical: Spacing.sm },
   linkBtnText: { fontSize: Typography.fontSize.md, color: Colors.accent },
   previewContainer: { flex: 1, position: 'relative' },
   previewImage: { width: '100%', height: '100%' },
   previewOverlay: { position: 'absolute', bottom: Spacing.lg, left: Spacing.lg, right: Spacing.lg },
-  gpsPill: { backgroundColor: 'rgba(0,0,0,0.65)', borderRadius: BorderRadius.full, paddingHorizontal: Spacing.md, paddingVertical: 8, alignSelf: 'flex-start' },
-  gpsPillText: { color: '#fff', fontSize: Typography.fontSize.sm },
+  gpsPill: { backgroundColor: 'rgba(0,0,0,0.75)', borderRadius: BorderRadius.full, paddingHorizontal: Spacing.md, paddingVertical: 8, alignSelf: 'flex-start' },
+  gpsPillText: { color: '#fff', fontSize: Typography.fontSize.xs, fontWeight: Typography.fontWeight.medium },
   previewActions: {
     flexDirection: 'row', gap: Spacing.md, padding: Spacing.lg,
     backgroundColor: Colors.background, borderTopWidth: 1, borderTopColor: Colors.border,

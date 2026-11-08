@@ -1,11 +1,12 @@
-import React, { useEffect, useState, useRef } from 'react'
+import React, { useEffect, useState, useRef, useCallback } from 'react'
 import {
   View, Text, StyleSheet, TouchableOpacity,
-  SafeAreaView, ActivityIndicator, Alert,
+  SafeAreaView, ActivityIndicator, Alert, BackHandler,
 } from 'react-native'
 import MapView, { Marker, UrlTile, Callout, PROVIDER_DEFAULT } from 'react-native-maps'
 import * as Location from 'expo-location'
 import { useRouter } from 'expo-router'
+import { useFocusEffect } from '@react-navigation/native'
 import { supabase } from '../../src/lib/supabase'
 import { Colors, Typography, Spacing, BorderRadius, getStatusColor } from '../../src/lib/theme'
 import type { Complaint } from '../../src/lib/supabase'
@@ -16,6 +17,18 @@ export default function MapScreen() {
   const [complaints, setComplaints] = useState<Complaint[]>([])
   const [userLocation, setUserLocation] = useState<{ latitude: number; longitude: number } | null>(null)
   const [loading, setLoading] = useState(true)
+
+  // Android Back Handler: return to Home tab
+  useFocusEffect(
+    useCallback(() => {
+      const onBackPress = () => {
+        router.replace('/(tabs)/')
+        return true
+      }
+      const subscription = BackHandler.addEventListener('hardwareBackPress', onBackPress)
+      return () => subscription.remove()
+    }, [router])
+  )
 
   useEffect(() => {
     loadComplaints()

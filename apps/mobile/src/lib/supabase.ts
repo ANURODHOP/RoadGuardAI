@@ -14,27 +14,81 @@ if (!supabaseUrl || supabaseUrl.includes('/rest/v1')) {
 }
 
 // ── Secure token storage ────────────────────────────────────────────────────
-// Uses expo-secure-store on native, localStorage on web
+// Uses chunked expo-secure-store on native to prevent Android 2048-byte limit crashes,
+// and localStorage on web
+const CHUNK_SIZE = 1800
+
 const ExpoSecureStoreAdapter = {
-  getItem: (key: string) => {
+  getItem: async (key: string): Promise<string | null> => {
     if (Platform.OS === 'web') {
-      return localStorage.getItem(key)
+      return typeof localStorage !== 'undefined' ? localStorage.getItem(key) : null
     }
-    return SecureStore.getItemAsync(key)
+    try {
+      const countStr = await SecureStore.getItemAsync(`${key}_chunks_count`)
+      if (countStr) {
+        const count = parseInt(countStr, 10)
+        let fullValue = ''
+        for (let i = 0; i < count; i++) {
+          const chunk = await SecureStore.getItemAsync(`${key}_chunk_${i}`)
+          if (chunk) fullValue += chunk
+        }
+        return fullValue || null
+      }
+      return await SecureStore.getItemAsync(key)
+    } catch (e) {
+      console.warn('[SecureStore] getItem error:', e)
+      return null
+    }
   },
-  setItem: (key: string, value: string) => {
+  setItem: async (key: string, value: string): Promise<void> => {
     if (Platform.OS === 'web') {
-      localStorage.setItem(key, value)
-      return Promise.resolve()
+      if (typeof localStorage !== 'undefined') localStorage.setItem(key, value)
+      return
     }
-    return SecureStore.setItemAsync(key, value)
+    try {
+      if (value.length <= CHUNK_SIZE) {
+        // Clear any previous chunks if present
+        const countStr = await SecureStore.getItemAsync(`${key}_chunks_count`)
+        if (countStr) {
+          const count = parseInt(countStr, 10)
+          for (let i = 0; i < count; i++) {
+            await SecureStore.deleteItemAsync(`${key}_chunk_${i}`).catch(() => {})
+          }
+          await SecureStore.deleteItemAsync(`${key}_chunks_count`).catch(() => {})
+        }
+        await SecureStore.setItemAsync(key, value)
+      } else {
+        // Clear direct key if previously set
+        await SecureStore.deleteItemAsync(key).catch(() => {})
+        const count = Math.ceil(value.length / CHUNK_SIZE)
+        await SecureStore.setItemAsync(`${key}_chunks_count`, count.toString())
+        for (let i = 0; i < count; i++) {
+          const chunk = value.slice(i * CHUNK_SIZE, (i + 1) * CHUNK_SIZE)
+          await SecureStore.setItemAsync(`${key}_chunk_${i}`, chunk)
+        }
+      }
+    } catch (e) {
+      console.warn('[SecureStore] setItem error:', e)
+    }
   },
-  removeItem: (key: string) => {
+  removeItem: async (key: string): Promise<void> => {
     if (Platform.OS === 'web') {
-      localStorage.removeItem(key)
-      return Promise.resolve()
+      if (typeof localStorage !== 'undefined') localStorage.removeItem(key)
+      return
     }
-    return SecureStore.deleteItemAsync(key)
+    try {
+      const countStr = await SecureStore.getItemAsync(`${key}_chunks_count`)
+      if (countStr) {
+        const count = parseInt(countStr, 10)
+        for (let i = 0; i < count; i++) {
+          await SecureStore.deleteItemAsync(`${key}_chunk_${i}`).catch(() => {})
+        }
+        await SecureStore.deleteItemAsync(`${key}_chunks_count`).catch(() => {})
+      }
+      await SecureStore.deleteItemAsync(key).catch(() => {})
+    } catch (e) {
+      console.warn('[SecureStore] removeItem error:', e)
+    }
   },
 }
 

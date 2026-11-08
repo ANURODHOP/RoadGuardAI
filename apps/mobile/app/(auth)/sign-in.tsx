@@ -1,4 +1,4 @@
-import React, { useState } from 'react'
+import React, { useState, useCallback } from 'react'
 import {
   View,
   Text,
@@ -9,10 +9,11 @@ import {
   KeyboardAvoidingView,
   Platform,
   ScrollView,
-  Alert,
   ActivityIndicator,
+  BackHandler,
 } from 'react-native'
 import { useRouter } from 'expo-router'
+import { useFocusEffect } from '@react-navigation/native'
 import { supabase } from '../../src/lib/supabase'
 import { Colors, Typography, Spacing, BorderRadius } from '../../src/lib/theme'
 
@@ -20,8 +21,21 @@ export default function SignInScreen() {
   const router = useRouter()
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
+  const [showPassword, setShowPassword] = useState(false)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
+
+  // Android hardware back handler: navigate to welcome
+  useFocusEffect(
+    useCallback(() => {
+      const onBackPress = () => {
+        router.replace('/(auth)/welcome')
+        return true
+      }
+      const subscription = BackHandler.addEventListener('hardwareBackPress', onBackPress)
+      return () => subscription.remove()
+    }, [router])
+  )
 
   const handleSignIn = async () => {
     if (!email.trim() || !password.trim()) {
@@ -32,17 +46,30 @@ export default function SignInScreen() {
     setError('')
     setLoading(true)
 
-    const { error: authError } = await supabase.auth.signInWithPassword({
-      email: email.trim().toLowerCase(),
-      password,
-    })
+    try {
+      const { error: authError } = await supabase.auth.signInWithPassword({
+        email: email.trim().toLowerCase(),
+        password,
+      })
 
-    setLoading(false)
-
-    if (authError) {
-      setError(authError.message)
+      if (authError) {
+        // Helpful error mapping
+        if (authError.message.includes('Invalid login credentials')) {
+          setError('Incorrect email or password. Please try again.')
+        } else if (authError.message.includes('Email not confirmed')) {
+          setError('Your email is not verified yet. Please check your inbox for the activation link.')
+        } else if (authError.message.toLowerCase().includes('network') || authError.message.toLowerCase().includes('fetch')) {
+          setError('Network connection failed. Please check your internet connection.')
+        } else {
+          setError(authError.message)
+        }
+      }
+      // On success, RootLayout's AuthProvider detects the session and navigates to (tabs)
+    } catch (err: any) {
+      setError(err?.message ?? 'An unexpected error occurred during sign in.')
+    } finally {
+      setLoading(false)
     }
-    // Navigation handled by root layout auth observer
   }
 
   return (
@@ -59,7 +86,7 @@ export default function SignInScreen() {
           <TouchableOpacity
             id="btn-back-from-signin"
             style={styles.backButton}
-            onPress={() => router.back()}
+            onPress={() => router.replace('/(auth)/welcome')}
           >
             <Text style={styles.backButtonText}>← Back</Text>
           </TouchableOpacity>
@@ -79,7 +106,10 @@ export default function SignInScreen() {
                 placeholder="you@example.com"
                 placeholderTextColor={Colors.textTertiary}
                 value={email}
-                onChangeText={setEmail}
+                onChangeText={(t) => {
+                  setEmail(t)
+                  if (error) setError('')
+                }}
                 keyboardType="email-address"
                 autoCapitalize="none"
                 autoCorrect={false}
@@ -88,18 +118,41 @@ export default function SignInScreen() {
             </View>
 
             <View style={styles.inputGroup}>
-              <Text style={styles.label}>Password</Text>
-              <TextInput
-                id="input-password"
-                style={styles.input}
-                placeholder="Your password"
-                placeholderTextColor={Colors.textTertiary}
-                value={password}
-                onChangeText={setPassword}
-                secureTextEntry
-                returnKeyType="done"
-                onSubmitEditing={handleSignIn}
-              />
+              <View style={styles.passwordLabelRow}>
+                <Text style={styles.label}>Password</Text>
+                <TouchableOpacity
+                  id="btn-forgot-password"
+                  onPress={() => router.push('/(auth)/forgot-password')}
+                >
+                  <Text style={styles.forgotPasswordText}>Forgot password?</Text>
+                </TouchableOpacity>
+              </View>
+              <View style={styles.passwordInputContainer}>
+                <TextInput
+                  id="input-password"
+                  style={styles.passwordInput}
+                  placeholder="Your password"
+                  placeholderTextColor={Colors.textTertiary}
+                  value={password}
+                  onChangeText={(t) => {
+                    setPassword(t)
+                    if (error) setError('')
+                  }}
+                  secureTextEntry={!showPassword}
+                  returnKeyType="done"
+                  onSubmitEditing={handleSignIn}
+                />
+                <TouchableOpacity
+                  id="btn-toggle-password-visibility"
+                  style={styles.visibilityToggle}
+                  onPress={() => setShowPassword(prev => !prev)}
+                  hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+                >
+                  <Text style={styles.visibilityToggleText}>
+                    {showPassword ? 'Hide' : 'Show'}
+                  </Text>
+                </TouchableOpacity>
+              </View>
             </View>
 
             {!!error && (
@@ -183,6 +236,16 @@ const styles = StyleSheet.create({
     fontWeight: Typography.fontWeight.medium,
     color: Colors.textSecondary,
   },
+  passwordLabelRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  forgotPasswordText: {
+    fontSize: Typography.fontSize.xs,
+    color: Colors.accent,
+    fontWeight: Typography.fontWeight.medium,
+  },
   input: {
     backgroundColor: Colors.surface,
     borderRadius: BorderRadius.md,
@@ -192,6 +255,30 @@ const styles = StyleSheet.create({
     color: Colors.textPrimary,
     borderWidth: 1,
     borderColor: Colors.border,
+  },
+  passwordInputContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: Colors.surface,
+    borderRadius: BorderRadius.md,
+    borderWidth: 1,
+    borderColor: Colors.border,
+  },
+  passwordInput: {
+    flex: 1,
+    paddingHorizontal: Spacing.md,
+    paddingVertical: 14,
+    fontSize: Typography.fontSize.md,
+    color: Colors.textPrimary,
+  },
+  visibilityToggle: {
+    paddingHorizontal: Spacing.md,
+    paddingVertical: 14,
+  },
+  visibilityToggleText: {
+    fontSize: Typography.fontSize.sm,
+    fontWeight: Typography.fontWeight.semibold,
+    color: Colors.textSecondary,
   },
   errorContainer: {
     backgroundColor: '#FEF2F2',
@@ -203,6 +290,7 @@ const styles = StyleSheet.create({
   errorText: {
     fontSize: Typography.fontSize.sm,
     color: Colors.statusRejected,
+    lineHeight: 20,
   },
   primaryButton: {
     backgroundColor: Colors.accent,
