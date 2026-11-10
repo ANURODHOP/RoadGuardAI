@@ -5,7 +5,7 @@ import {
 } from 'react-native'
 import MapView, { Marker, UrlTile, PROVIDER_DEFAULT } from 'react-native-maps'
 import { useLocalSearchParams, useRouter } from 'expo-router'
-import { useFocusEffect } from '@react-navigation/native'
+import { useFocusEffect } from 'expo-router'
 import { fetchNearbyComplaints } from '../src/lib/supabase'
 import { Colors, Typography, Spacing, BorderRadius, getStatusColor, Shadows } from '../src/lib/theme'
 import type { NearbyComplaint } from '../src/lib/supabase'

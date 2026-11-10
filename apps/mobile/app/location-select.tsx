@@ -6,7 +6,7 @@ import {
 import MapView, { Marker, UrlTile, PROVIDER_DEFAULT } from 'react-native-maps'
 import * as Location from 'expo-location'
 import { useLocalSearchParams, useRouter } from 'expo-router'
-import { useFocusEffect } from '@react-navigation/native'
+import { useFocusEffect } from 'expo-router'
 import { Colors, Typography, Spacing, BorderRadius, Shadows } from '../src/lib/theme'
 
 const { width } = Dimensions.get('window')

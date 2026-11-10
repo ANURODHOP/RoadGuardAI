@@ -12,7 +12,7 @@ import {
   Alert,
 } from 'react-native'
 import { useRouter } from 'expo-router'
-import { useFocusEffect } from '@react-navigation/native'
+import { useFocusEffect } from 'expo-router'
 import { supabase, type Complaint, type NearbyComplaint } from '../../src/lib/supabase'
 import {
   Colors,

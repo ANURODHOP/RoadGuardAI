@@ -4,7 +4,7 @@ import {
   SafeAreaView, ActivityIndicator, RefreshControl, TextInput, BackHandler,
 } from 'react-native'
 import { useRouter } from 'expo-router'
-import { useFocusEffect } from '@react-navigation/native'
+import { useFocusEffect } from 'expo-router'
 import { supabase, fetchMyComplaintsPage } from '../../src/lib/supabase'
 import { Colors, Typography, Spacing, BorderRadius, getStatusColor } from '../../src/lib/theme'
 import type { Complaint, ComplaintStatus } from '../../src/lib/supabase'

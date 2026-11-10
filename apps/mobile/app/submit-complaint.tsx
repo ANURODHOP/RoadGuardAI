@@ -5,7 +5,7 @@ import {
 } from 'react-native'
 import * as Location from 'expo-location'
 import { useLocalSearchParams, useRouter } from 'expo-router'
-import { useFocusEffect } from '@react-navigation/native'
+import { useFocusEffect } from 'expo-router'
 import { supabase, uploadEvidence } from '../src/lib/supabase'
 import { Colors, Typography, Spacing, BorderRadius, getStatusColor, Shadows } from '../src/lib/theme'
 

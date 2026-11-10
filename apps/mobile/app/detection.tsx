@@ -4,7 +4,7 @@ import {
   ScrollView, ActivityIndicator, Image, Dimensions, BackHandler,
 } from 'react-native'
 import { useLocalSearchParams, useRouter } from 'expo-router'
-import { useFocusEffect } from '@react-navigation/native'
+import { useFocusEffect } from 'expo-router'
 import { runInference } from '../src/lib/inference'
 import { Colors, Typography, Spacing, BorderRadius, getDetectionStateColor } from '../src/lib/theme'
 import type { InferenceResult, BoundingBox } from '../src/lib/inference'

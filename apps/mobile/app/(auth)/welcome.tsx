@@ -11,7 +11,7 @@ import {
   Alert,
 } from 'react-native'
 import { useRouter } from 'expo-router'
-import { useFocusEffect } from '@react-navigation/native'
+import { useFocusEffect } from 'expo-router'
 import { Colors, Typography, Spacing, BorderRadius } from '../../src/lib/theme'
 
 const { width, height } = Dimensions.get('window')

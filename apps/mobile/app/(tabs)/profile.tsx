@@ -4,7 +4,7 @@ import {
   ScrollView, ActivityIndicator, Alert, TextInput, Modal, BackHandler,
 } from 'react-native'
 import { useRouter } from 'expo-router'
-import { useFocusEffect } from '@react-navigation/native'
+import { useFocusEffect } from 'expo-router'
 import { supabase } from '../../src/lib/supabase'
 import { Colors, Typography, Spacing, BorderRadius } from '../../src/lib/theme'
 import type { Profile } from '../../src/lib/supabase'

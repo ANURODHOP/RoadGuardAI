@@ -6,7 +6,7 @@ import {
 import MapView, { Marker, UrlTile, Callout, PROVIDER_DEFAULT } from 'react-native-maps'
 import * as Location from 'expo-location'
 import { useRouter } from 'expo-router'
-import { useFocusEffect } from '@react-navigation/native'
+import { useFocusEffect } from 'expo-router'
 import { supabase } from '../../src/lib/supabase'
 import { Colors, Typography, Spacing, BorderRadius, getStatusColor } from '../../src/lib/theme'
 import type { Complaint } from '../../src/lib/supabase'
