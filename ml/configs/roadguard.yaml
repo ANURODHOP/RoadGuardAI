@@ -1,0 +1,41 @@
+# RoadGuardAI — YOLOv8 Pothole Detection Training Configuration
+# ==============================================================
+# Canonical dataset and hyperparameter configuration for YOLOv8n fine-tuning.
+
+# Dataset paths (relative to ml/ or absolute)
+path: ../datasets/roadguard
+train: images/train
+val: images/val
+test: images/test
+
+# Class definitions
+names:
+  0: pothole
+
+# Recommended Training Hyperparameters (CPU / Colab / Entry GPU)
+training:
+  model: yolov8n.pt          # Base pretrained weights (COCO transfer learning)
+  imgsz: 320                 # Matches mobile inference input dimensions (320x320)
+  epochs: 50                 # Sufficient for convergence with pretrained backbone
+  batch: 8                   # Safe for CPU / low VRAM environments (16 for GPU)
+  device: cpu                # Default to cpu; set to '0' or 'cuda:0' when GPU available
+  optimizer: AdamW           # Stable optimizer for small-to-medium datasets
+  lr0: 0.001                 # Initial learning rate
+  lrf: 0.01                  # Final learning rate fraction (cosine decay)
+  warmup_epochs: 3           # Warmup epochs
+  patience: 15               # Early stopping patience
+  save_period: 10            # Save checkpoint every 10 epochs
+  seed: 42                   # Deterministic seed for reproducibility
+
+# Data Augmentation (tailored for road surface photography)
+augmentation:
+  hsv_h: 0.015               # Minor hue variation (different road asphalt / lighting)
+  hsv_s: 0.7                 # Saturation variation (wet vs dry road)
+  hsv_v: 0.4                 # Value / brightness variation (direct sun vs overcast)
+  degrees: 5.0               # Slight camera tilt
+  translate: 0.1             # Small translation
+  scale: 0.3                 # Scale variation (distance from pothole)
+  fliplr: 0.5                # Horizontal flip (roads are symmetric)
+  flipud: 0.0                # Vertical flip disabled (roads have gravity / horizon)
+  mosaic: 0.5                # Mosaic augmentation for multi-scale context
+  mixup: 0.0                 # Mixup disabled to avoid unrealistic transparent roads

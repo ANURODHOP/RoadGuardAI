@@ -3,6 +3,9 @@ import { Asset } from 'expo-asset'
 import * as FileSystem from 'expo-file-system'
 import { manipulateAsync, SaveFormat } from 'expo-image-manipulator'
 import { InferenceSession, Tensor } from 'onnxruntime-react-native'
+import { decodeBase64JpegToRgba, rgbaToNchwFloat32 } from './image-processing'
+
+export { decodeBase64JpegToRgba, rgbaToNchwFloat32 }
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 const MODEL_FILENAME = process.env.EXPO_PUBLIC_MODEL_FILENAME ?? 'pothole_yolov8n.onnx'
@@ -143,88 +146,48 @@ export async function runInference(imageUri: string): Promise<InferenceResult> {
 }
 
 // ── Image Preprocessing ───────────────────────────────────────────────────────
+
+/**
+ * Full preprocessing pipeline: image URI → ONNX input tensor.
+ *
+ * Pipeline:
+ * 1. Resize to 320×320 via expo-image-manipulator (hardware-accelerated, on-device)
+ * 2. Decode the resulting JPEG with jpeg-js (proper DCT decompression via decodeBase64JpegToRgba)
+ * 3. Convert RGBA pixels → planar RGB NCHW Float32, normalised [0,1] (via rgbaToNchwFloat32)
+ * 4. Wrap in an ONNX Tensor [1, 3, 320, 320]
+ *
+ * Matches the Python reference preprocessing in ml/scripts/test_inference.py:
+ *   resize 320×320 → float32 / 255.0 → HWC→CHW → expand batch dim
+ */
 async function preprocessImage(imageUri: string): Promise<Tensor> {
   // Step 1: Resize to 320×320 using expo-image-manipulator (hardware-accelerated)
+  // Using high JPEG quality (0.95) to minimise compression artefacts before decoding
   const resized = await manipulateAsync(
     imageUri,
     [{ resize: { width: INPUT_SIZE, height: INPUT_SIZE } }],
-    { format: SaveFormat.JPEG, base64: true, compress: 0.92 },
+    { format: SaveFormat.JPEG, base64: true, compress: 0.95 },
   )
 
   if (!resized.base64) {
     throw new Error('Image resize failed — no base64 output')
   }
 
-  // Step 2: Decode base64 JPEG to raw RGB pixels
-  const pixelData = decodeBase64JpegToRgb(resized.base64, INPUT_SIZE, INPUT_SIZE)
+  // Step 2: Decode JPEG to actual RGBA pixel data
+  const decoded = decodeBase64JpegToRgba(resized.base64)
 
-  // Step 3: Build NCHW Float32 tensor, normalised [0, 255] → [0.0, 1.0]
-  const pixelCount = INPUT_SIZE * INPUT_SIZE
-  const float32 = new Float32Array(3 * pixelCount)
-
-  for (let i = 0; i < pixelCount; i++) {
-    float32[i]                  = pixelData[i * 3]     / 255.0  // R
-    float32[pixelCount + i]     = pixelData[i * 3 + 1] / 255.0  // G
-    float32[2 * pixelCount + i] = pixelData[i * 3 + 2] / 255.0  // B
+  // Verify dimensions match expectations
+  if (decoded.width !== INPUT_SIZE || decoded.height !== INPUT_SIZE) {
+    throw new Error(
+      `Decoded image dimensions ${decoded.width}×${decoded.height} ` +
+      `do not match expected ${INPUT_SIZE}×${INPUT_SIZE}`,
+    )
   }
 
+  // Step 3: Convert RGBA → planar RGB NCHW Float32, normalised [0, 1]
+  const float32 = rgbaToNchwFloat32(decoded.data, INPUT_SIZE, INPUT_SIZE)
+
+  // Step 4: Construct ONNX tensor [batch=1, channels=3, height=320, width=320]
   return new Tensor('float32', float32, [1, 3, INPUT_SIZE, INPUT_SIZE])
-}
-
-/**
- * Decode a base64-encoded JPEG into a flat RGB Uint8ClampedArray.
- *
- * This uses atob() to get raw bytes, then scans for JPEG scan data (0xFFDA
- * Start-of-Scan marker) and extracts interleaved luminance/chroma bytes.
- * It is a heuristic suitable for the YUV→RGB approximation needed for
- * inference preprocessing; it is NOT a full standards-compliant JPEG decoder.
- *
- * For higher accuracy, replace with jpeg-js if added to the project:
- *   import jpeg from 'jpeg-js'
- *   const { data } = jpeg.decode(rawBytes, { useTArray: true })
- *   // data is RGBA — convert to RGB
- */
-function decodeBase64JpegToRgb(
-  base64: string,
-  width: number,
-  height: number,
-): Uint8ClampedArray {
-  const rawBytes = Uint8Array.from(atob(base64), c => c.charCodeAt(0))
-  const pixelCount = width * height
-  const pixels = new Uint8ClampedArray(pixelCount * 3)
-
-  // Find JPEG SOS (Start of Scan) marker 0xFF 0xDA
-  let dataStart = 0
-  for (let i = 0; i < rawBytes.length - 1; i++) {
-    if (rawBytes[i] === 0xFF && rawBytes[i + 1] === 0xDA) {
-      // Skip 12-byte SOS header (standard minimum)
-      dataStart = Math.min(i + 12, rawBytes.length - 1)
-      break
-    }
-  }
-
-  const available = rawBytes.length - dataStart
-  if (available <= 0) {
-    // Fallback: fill with mid-grey (neutral for inference)
-    pixels.fill(128)
-    return pixels
-  }
-
-  // Extract interleaved scan bytes into RGB channels.
-  // JPEG scan data is YCbCr — we approximate as grey for the purpose of
-  // feature extraction by the model (luminance carries most structural info).
-  for (let i = 0; i < pixelCount; i++) {
-    const srcIdx = dataStart + (i % available)
-    const byte = rawBytes[srcIdx] & 0xFF
-
-    // De-stuffing: skip 0xFF 0x00 sequences (JPEG byte stuffing)
-    // Simple approach: treat stuffed bytes as the surrounding value
-    pixels[i * 3]     = byte  // R
-    pixels[i * 3 + 1] = byte  // G
-    pixels[i * 3 + 2] = byte  // B
-  }
-
-  return pixels
 }
 
 // ── Postprocessing ────────────────────────────────────────────────────────────
